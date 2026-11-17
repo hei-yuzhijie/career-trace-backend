@@ -38,9 +38,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 岗位推荐：两段式 + 语义混合。
- * <p>第一段：排除标签过滤 + location 硬过滤（+ 可选 city 收窄）；
- * 第二段：结构化分（0-85）+ 语义分（0-15），输出归因。</p>
+ * 岗位推荐。先按排除标签和地点过滤岗位，再对候选岗位打分（结构化 + 语义），最后排序分页。
  */
 @Service
 @RequiredArgsConstructor
@@ -61,6 +59,7 @@ public class RecommendationService {
         int pageSize = Pages.size(size);
         BigDecimal threshold = minScore == null || minScore.signum() < 0 ? BigDecimal.ZERO : minScore;
 
+        // 用户没有正向标签时直接返回空，后面的过滤和打分都没意义
         Map<Long, MemoryTagRow> positiveTags = loadPositiveTags(userId);
         if (positiveTags.isEmpty()) {
             RecommendationPageVO empty = new RecommendationPageVO();
@@ -73,7 +72,10 @@ public class RecommendationService {
             return empty;
         }
 
+        // 用户标记为排除的标签，岗位只要命中其中一个就剔除
         Set<Long> excludedTagIds = loadExcludedTagIds(userId);
+
+        // 从正向标签里挑出地点，用户有地点标签时作为硬过滤条件
         Set<Long> locationTagIds = new HashSet<>();
         Set<String> locationNames = new LinkedHashSet<>();
         for (MemoryTagRow tag : positiveTags.values()) {
@@ -84,11 +86,14 @@ public class RecommendationService {
                 }
             }
         }
+
+        // skill 熟练度，用来算用户 level 和岗位 requiredLevel 的差距
         Map<Long, Integer> skillLevels = loadSkillLevels(userId);
 
         List<JobRow> activeJobs = jobMapper.selectActiveJobRows(trimToNull(city));
         Map<Long, List<JobTagRow>> jobTagsByJob = loadJobTags(activeJobs);
 
+        // 排除标签过滤：岗位带任一排除标签就剔除，剔除的 jobId 记下来用于响应
         List<Long> excludedByPolarity = new ArrayList<>();
         List<JobRow> afterPolarity = new ArrayList<>();
         for (JobRow job : activeJobs) {
@@ -101,6 +106,7 @@ public class RecommendationService {
             }
         }
 
+        // 地点过滤：用户有地点标签时，岗位必须命中其中一个，否则剔除
         List<Long> excludedByLocation = new ArrayList<>();
         List<JobRow> candidates;
         if (locationTagIds.isEmpty()) {
@@ -117,9 +123,11 @@ public class RecommendationService {
             }
         }
 
+        // 语义分，外部服务调用，失败时返回空 map，打分时降级为纯结构化
         Map<Long, SemanticScore> semanticScores = semanticScoringService.scoreJobs(
                 userId, candidates, jobTagsByJob, positiveTags);
 
+        // 对每个候选岗位打分，低于阈值的丢弃
         List<ScoredJob> scored = new ArrayList<>();
         for (JobRow job : candidates) {
             SemanticScore semantic = semanticScores.get(job.getJobId());
@@ -131,6 +139,8 @@ public class RecommendationService {
                 scored.add(new ScoredJob(job, result));
             }
         }
+
+        // 按总分降序，相同总分时依次比结构化分、匹配标签数、语义分，最后用 jobId 保证顺序稳定
         scored.sort((left, right) -> {
             int compared = right.result().getScore().compareTo(left.result().getScore());
             if (compared != 0) {
@@ -152,6 +162,7 @@ public class RecommendationService {
             return Long.compare(left.job().getJobId(), right.job().getJobId());
         });
 
+        // 内存分页，取当前页数据组装返回
         List<RecommendationItemVO> records = new ArrayList<>();
         for (ScoredJob item : subList(scored, pageNo, pageSize)) {
             JobRow job = item.job();
@@ -180,6 +191,9 @@ public class RecommendationService {
         return response;
     }
 
+    /**
+     * 单个岗位的完整归因，返回加分、减分、缺口、中性项，供前端展示
+     */
     public ExplainVO explain(Long userId, Long jobId) {
         JobRow job = jobMapper.selectJobRowById(jobId);
         if (job == null) {
@@ -222,6 +236,9 @@ public class RecommendationService {
         return response;
     }
 
+    /**
+     * 用户排除的标签，按 tagId 去重，同一标签在多条记忆里只返回一条。
+     */
     public ExcludedTagsVO excludedTags(Long userId) {
         Map<Long, MemoryTagRow> unique = new LinkedHashMap<>();
         for (MemoryTagRow row : memoryTagMapper.selectUserTagRows(userId, -1)) {
@@ -234,6 +251,9 @@ public class RecommendationService {
         return new ExcludedTagsVO(tags);
     }
 
+    /**
+     * 用户的地点标签，只取 category=location 且 polarity=1 的。
+     */
     public LocationTagsVO locationTags(Long userId) {
         Map<Long, MemoryTagRow> unique = new LinkedHashMap<>();
         for (MemoryTagRow row : memoryTagMapper.selectUserTagRows(userId, 1)) {
@@ -249,11 +269,11 @@ public class RecommendationService {
     }
 
     /**
-     * 有 location 标签时：优先用 job_tags 的 location 标签匹配；
-     * 若岗位没有 location 标签，则用 jobs.city 与用户 location 标签名兜底，避免数据缺失误杀。
+     * 判断岗位是否命中用户的地点标签。
+     * 优先用 job_tags 的 location 标签比对；岗位没有 location 标签时，用 jobs.city 和标签名比对。
      */
     private static boolean locationHit(JobRow job, List<JobTagRow> jobTags,
-                                      Set<Long> locationTagIds, Set<String> locationNames) {
+                                       Set<Long> locationTagIds, Set<String> locationNames) {
         boolean hasLocationTag = jobTags.stream()
                 .anyMatch(tag -> "location".equals(tag.getTagCategory()));
         if (hasLocationTag) {
@@ -263,7 +283,8 @@ public class RecommendationService {
     }
 
     /**
-     * 同一标签可能出现在多条记忆里：skill 取熟练度最高，其余取置信度最高（SQL 已排序）。
+     * 加载用户的正向标签，按 tagId 去重。
+     * SQL 已按优先级排序（skill 按熟练度、其余按置信度），putIfAbsent 保证每个 tagId 只取第一条。
      */
     private Map<Long, MemoryTagRow> loadPositiveTags(Long userId) {
         Map<Long, MemoryTagRow> best = new LinkedHashMap<>();
@@ -281,6 +302,9 @@ public class RecommendationService {
         return ids;
     }
 
+    /**
+     * 用户 skill 类标签的聚合熟练度，level 为 null 的跳过。
+     */
     private Map<Long, Integer> loadSkillLevels(Long userId) {
         Map<Long, Integer> levels = new HashMap<>();
         for (SkillProfileRow row : userSkillProfileMapper.selectProfileRows(userId)) {
@@ -291,6 +315,9 @@ public class RecommendationService {
         return levels;
     }
 
+    /**
+     * 批量查岗位标签，按 jobId 分组。
+     */
     private Map<Long, List<JobTagRow>> loadJobTags(List<JobRow> jobs) {
         if (jobs.isEmpty()) {
             return Map.of();
@@ -303,6 +330,9 @@ public class RecommendationService {
         return grouped;
     }
 
+    /**
+     * 内存分页。page 从 1 开始，越界返回空列表。
+     */
     private static <T> List<T> subList(List<T> all, int page, int size) {
         int from = (page - 1) * size;
         if (from >= all.size()) {

@@ -21,10 +21,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 推荐算法的语义分：用户画像文本 / 岗位文本向量化 → 余弦相似度 → 归一化 → 0~semanticWeight。
- *
- * <p>缓存只放进程内，key 为内容 hash；不新增表。Embedding 调用失败时在
- * failure-backoff-seconds 内直接降级为结构化匹配，避免每个请求都等待超时。</p>
+ * 语义分计算。用户画像和岗位文本分别向量化，算余弦相似度，归一化后映射到 0~semanticWeight 分。
+ * 向量缓存在进程内，按内容 hash 判断是否需要重算；embedding 调用失败后进入退避期，期间直接降级。
  */
 @Slf4j
 @Service
@@ -40,6 +38,7 @@ public class SemanticScoringService {
 
     private final Map<Long, CachedVector> userCache = new ConcurrentHashMap<>();
     private final Map<Long, CachedVector> jobCache = new ConcurrentHashMap<>();
+    // 退避截止时间戳，当前时间小于它时直接返回空 map
     private volatile long disabledUntil = 0L;
 
     public SemanticScoringService(EmbeddingClient embeddingClient,
@@ -64,7 +63,8 @@ public class SemanticScoringService {
     }
 
     /**
-     * 批量计算候选岗位的语义分；返回的 map 不包含语义不可用的岗位。
+     * 计算候选岗位的语义分。
+     * 返回的 map 只包含成功拿到向量的岗位；任何岗位缺向量时整批返回空，调用方据此降级为纯结构化匹配。
      */
     public Map<Long, SemanticScore> scoreJobs(Long userId,
                                               List<JobRow> jobs,
@@ -73,6 +73,7 @@ public class SemanticScoringService {
         if (!isAvailable() || jobs == null || jobs.isEmpty()) {
             return Map.of();
         }
+        // 用户没有正向标签就拼不出画像文本，语义分没有意义
         String profileText = buildProfileText(positiveTags);
         if (profileText.isBlank()) {
             return Map.of();
@@ -83,10 +84,12 @@ public class SemanticScoringService {
             return Map.of();
         }
 
+        // 用户画像 hash 变了才需要重新向量化
         String profileHash = Hashes.sha256(profileText);
         CachedVector userVector = userCache.get(userId);
         boolean needUser = userVector == null || !profileHash.equals(userVector.hash());
 
+        // 收集本次需要向量化的文本：用户画像（若需重算）+ 新增或变更的岗位文本
         List<String> inputs = new ArrayList<>();
         int userInputIndex = -1;
         if (needUser) {
@@ -120,6 +123,7 @@ public class SemanticScoringService {
                 }
             }
         } catch (Exception e) {
+            // 调用失败后进入退避期，避免后续请求继续等待超时
             disabledUntil = System.currentTimeMillis() + failureBackoffSeconds * 1000;
             log.warn("Embedding 调用失败，{} 秒内降级为纯结构化匹配: {}",
                     failureBackoffSeconds, e.getMessage());
@@ -130,18 +134,34 @@ public class SemanticScoringService {
             return Map.of();
         }
 
+        // 逐岗位算语义分：余弦相似度 → 归一化到 0~1 → 乘权重得到最终分
         Map<Long, SemanticScore> result = new LinkedHashMap<>();
         for (JobRow job : jobs) {
             CachedVector jobVector = jobCache.get(job.getJobId());
+            // 这个岗位没有向量（理论上不会发生，前面已经保证要么全有要么全降级），跳过
             if (jobVector == null) {
                 continue;
             }
+
+            // 用户向量和岗位向量算余弦相似度，范围 [-1, 1]，值越大越相似
             double similarity = cosine(userVector.vector(), jobVector.vector());
-            BigDecimal similarityValue = BigDecimal.valueOf(similarity).setScale(4, RoundingMode.HALF_UP);
+
+            // 转成 BigDecimal 并保留 4 位小数，避免后续计算的浮点误差
+            BigDecimal similarityValue = BigDecimal.valueOf(similarity)
+                    .setScale(4, RoundingMode.HALF_UP);
+
+            // 把相似度从 [semanticFloor, semanticCeiling] 线性映射到 [0, 1]
+            // 低于 floor 记 0，高于 ceiling 记 1，落在区间内按比例换算
             BigDecimal normalized = normalize(similarityValue);
-            BigDecimal points = normalized.multiply(semanticWeight).setScale(2, RoundingMode.HALF_UP);
+
+            // 归一化值乘权重（默认 15），得到该岗位的语义分，保留 2 位小数
+            BigDecimal points = normalized.multiply(semanticWeight)
+                    .setScale(2, RoundingMode.HALF_UP);
+
+            // 三个值都保留：similarity 给前端展示，normalized 用于排查，points 用于总分
             result.put(job.getJobId(), new SemanticScore(similarityValue, normalized, points));
         }
+        // 只要有一个岗位没向量，整批不返回，保证同一批岗位的打分口径一致
         if (result.size() != jobs.size()) {
             log.warn("部分岗位缺少语义向量，本次整体降级为纯结构化匹配");
             return Map.of();
@@ -149,6 +169,9 @@ public class SemanticScoringService {
         return result;
     }
 
+    /**
+     * 写岗位向量缓存，超过上限时整体清空。
+     */
     private void putJobCache(Long jobId, String hash, float[] vector) {
         if (jobCache.size() >= MAX_CACHE_SIZE) {
             jobCache.clear();
@@ -156,6 +179,10 @@ public class SemanticScoringService {
         jobCache.put(jobId, new CachedVector(hash, vector));
     }
 
+    /**
+     * 把余弦相似度从 [floor, ceiling] 线性映射到 [0, 1]。
+     * 低于 floor 记 0，高于 ceiling 记 1；floor 和 ceiling 用来压缩无效区间，提高区分度。
+     */
     private BigDecimal normalize(BigDecimal similarity) {
         BigDecimal range = semanticCeiling.subtract(semanticFloor);
         if (range.signum() <= 0) {
@@ -172,6 +199,10 @@ public class SemanticScoringService {
         return value.setScale(4, RoundingMode.HALF_UP);
     }
 
+    /**
+     * 拼用户画像文本：按 category 排序后逐个拼接，skill 和 experience 额外带上熟练度。
+     * 示例："求职者画像：地点：杭州；偏好：大小周；技能：内容策划（熟练），证据：…；"
+     */
     private static String buildProfileText(Map<Long, MemoryTagRow> positiveTags) {
         if (positiveTags == null || positiveTags.isEmpty()) {
             return "";
@@ -194,6 +225,9 @@ public class SemanticScoringService {
         return text.toString();
     }
 
+    /**
+     * 拼岗位文本：标题、城市、公司、JD 原文，末尾附上岗位标签名。
+     */
     private static String buildJobText(JobRow job, List<JobTagRow> jobTags) {
         StringBuilder text = new StringBuilder();
         text.append("岗位：").append(nullSafe(job.getTitle()))
@@ -241,6 +275,9 @@ public class SemanticScoringService {
         return value == null ? "" : value;
     }
 
+    /**
+     * 余弦相似度。两个向量长度不一致或任一为零向量时返回 0。
+     */
     private static double cosine(float[] left, float[] right) {
         if (left == null || right == null || left.length != right.length) {
             return 0.0;

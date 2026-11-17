@@ -15,10 +15,11 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 新版结构化匹配核心。
+ * 结构化匹配。
  *
- * <p>核心思想：按岗位全部标签的权重做归一化，避免“标签多的岗位天然高分”；
- * 找到匹配项按权重加分，未覆盖项按权重扣分，最终结构化分限制在 0~85（语义可用时）。</p>
+ * <p>按岗位全部标签的权重做归一化，避免标签多的岗位天然占优。
+ * 匹配上的标签按 weight × confidence × levelFactor 加分，未覆盖的按 penalty 扣分，
+ * 结构化分限制在 0~85；语义可用时总分 = 结构化分 + 语义分（0~15），语义不可用时结构化满分按 100 算。</p>
  *
  * <ul>
  *     <li>匹配项：contribution = structuredMax × weight × confidence × levelFactor / Σweight；</li>
@@ -69,11 +70,13 @@ public class MatchEngine {
                                   boolean withReasons,
                                   BigDecimal semanticPoints) {
         MatchScoreResult result = new MatchScoreResult();
+        // 语义可用时结构化满分是 85，不可用时改成 100，保证总分上限始终是 100
         boolean semanticAvailable = semanticPoints != null && semanticWeight.signum() > 0;
         BigDecimal structuredMax = semanticAvailable ? structuredWeight : HUNDRED;
         result.setSemanticAvailable(semanticAvailable);
         result.setStructuredWeightUsed(structuredMax.setScale(2, RoundingMode.HALF_UP));
 
+        // 先算岗位所有标签的权重之和，作为归一化分母
         BigDecimal totalWeight = BigDecimal.ZERO;
         for (JobTagRow jobTag : jobTags) {
             BigDecimal weight = jobTag.getWeight() == null ? ONE : jobTag.getWeight();
@@ -82,6 +85,7 @@ public class MatchEngine {
             }
         }
         result.setTotalTagWeight(totalWeight.setScale(2, RoundingMode.HALF_UP));
+        // 岗位没有任何有效标签时，结构化分为 0，直接返回语义分
         if (totalWeight.signum() == 0) {
             applySemantic(result, semanticPoints, semanticAvailable);
             return result;
@@ -94,8 +98,10 @@ public class MatchEngine {
             }
             String category = jobTag.getTagCategory();
             int requiredLevel = jobTag.getRequiredLevel() == null ? 0 : jobTag.getRequiredLevel();
+            // 只有 skill 类且岗位写了 requiredLevel 的标签，才按等级差打折
             boolean skillWithLevel = "skill".equals(category) && requiredLevel > 0;
 
+            // 命中用户排除项：正常流程里这类岗位已被第一段过滤掉，这里兜底扣满分
             if (excludedTagIds.contains(jobTag.getTagId())) {
                 BigDecimal contribution = negativeContribution(structuredMax, weight, ONE, totalWeight);
                 addNegative(result, jobTag, weight, contribution, requiredLevel, 0, requiredLevel,
@@ -103,6 +109,7 @@ public class MatchEngine {
                 continue;
             }
 
+            // 用户没有这个标签：按必备/加分走不同扣分比例
             MemoryTagRow userTag = userTags.get(jobTag.getTagId());
             if (userTag == null) {
                 BigDecimal penalty = weight.compareTo(ONE) >= 0 ? requiredMissPenalty : bonusMissPenalty;
@@ -110,13 +117,16 @@ public class MatchEngine {
                 addNegative(result, jobTag, weight, contribution, requiredLevel, 0, requiredLevel,
                         skillWithLevel ? "缺失该技能证据" : "岗位要求该条件，但你的记忆中未提及",
                         withReasons);
+                // 缺的是带等级的 skill，额外记一条 gap 供前端展示学习建议
                 if (skillWithLevel && withReasons) {
                     result.getGaps().add(gap(jobTag, 0, requiredLevel));
                 }
                 continue;
             }
 
+            // 用户有这个标签：算置信度、等级差、levelFactor，再算贡献分
             BigDecimal confidence = userTag.getConfidence() == null ? BigDecimal.ZERO : userTag.getConfidence();
+            // skill 类优先用聚合表里的 level，没有则回退到这条记忆上的 proficiency
             int userLevel = skillWithLevel
                     ? skillLevels.getOrDefault(jobTag.getTagId(),
                     userTag.getProficiency() == null ? 0 : userTag.getProficiency())
@@ -129,6 +139,7 @@ public class MatchEngine {
                     .multiply(quality)
                     .divide(totalWeight, 4, RoundingMode.HALF_UP);
 
+            // 贡献分为正记入加分项，为 0 记入中性项
             if (contribution.signum() > 0) {
                 result.setPositiveSum(result.getPositiveSum().add(contribution));
                 result.setMatchedTagCount(result.getMatchedTagCount() + 1);
@@ -148,11 +159,13 @@ public class MatchEngine {
                 }
             }
 
+            // 等级差大于 0 的 skill，记一条 gap
             if (skillWithLevel && levelGap > 0 && withReasons) {
                 result.getGaps().add(gap(jobTag, userLevel, levelGap));
             }
         }
 
+        // 结构化分 = 加分 + 扣分，限制在 [0, structuredMax]
         BigDecimal structured = result.getPositiveSum().add(result.getNegativeSum());
         if (structured.signum() < 0) {
             structured = BigDecimal.ZERO;
@@ -168,6 +181,10 @@ public class MatchEngine {
         return result;
     }
 
+    /**
+     * 把语义分加到结构化分上，总分限制在 [0, 100]。
+     * 语义分会被截断到 [0, semanticWeight]，防止外部传入越界值。
+     */
     private void applySemantic(MatchScoreResult result, BigDecimal semanticPoints, boolean semanticAvailable) {
         BigDecimal semantic = semanticAvailable
                 ? semanticPoints.max(BigDecimal.ZERO).min(semanticWeight)
@@ -184,6 +201,9 @@ public class MatchEngine {
         result.setScore(score.setScale(2, RoundingMode.HALF_UP));
     }
 
+    /**
+     * 扣分公式：-(structuredMax × weight × penaltyRate / totalWeight)。
+     */
     private static BigDecimal negativeContribution(BigDecimal structuredMax, BigDecimal weight,
                                                    BigDecimal penaltyRate, BigDecimal totalWeight) {
         return structuredMax.multiply(weight).multiply(penaltyRate)
@@ -191,6 +211,9 @@ public class MatchEngine {
                 .negate();
     }
 
+    /**
+     * 等级差对应的折扣系数：0 级差 1.0，差 1 级 0.5，差 2 级 0.2，差 3 级以上 0。
+     */
     public static BigDecimal levelFactor(int levelGap) {
         if (levelGap <= 0) {
             return ONE;
@@ -202,6 +225,9 @@ public class MatchEngine {
         };
     }
 
+    /**
+     * 记一条扣分项。withReasons 为 false 时只累加分数，不组装 VO。
+     */
     private void addNegative(MatchScoreResult result, JobTagRow jobTag, BigDecimal weight,
                              BigDecimal contribution, int requiredLevel, int userLevel, int levelGap,
                              String reason, boolean withReasons) {
@@ -216,6 +242,7 @@ public class MatchEngine {
         vo.setWeight(weight);
         vo.setReason(reason);
         vo.setContribution(contribution);
+        // 只有带等级的 skill 才填 requiredLevel / userLevel / levelGap
         if ("skill".equals(jobTag.getTagCategory()) && requiredLevel > 0) {
             vo.setRequiredLevel(requiredLevel);
             vo.setUserLevel(userLevel);
@@ -224,6 +251,9 @@ public class MatchEngine {
         result.getNegative().add(vo);
     }
 
+    /**
+     * 组装加分项的 VO，包含标签信息、等级差、置信度、证据原文和记忆 ID，前端可溯源。
+     */
     private MatchReasonVO positiveReason(JobTagRow jobTag, MemoryTagRow userTag, BigDecimal weight,
                                          BigDecimal confidence, Integer requiredLevel, Integer userLevel,
                                          Integer levelGap, BigDecimal contribution) {
@@ -242,6 +272,9 @@ public class MatchEngine {
         return vo;
     }
 
+    /**
+     * 组装中性项 VO，contribution 固定为 0。
+     */
     private MatchReasonVO neutralReason(JobTagRow jobTag, BigDecimal weight, BigDecimal confidence, String reason) {
         MatchReasonVO vo = new MatchReasonVO();
         vo.setTagId(jobTag.getTagId());
@@ -254,6 +287,9 @@ public class MatchEngine {
         return vo;
     }
 
+    /**
+     * 组装缺口项 VO，根据用户等级和等级差生成不同的补齐建议。
+     */
     private GapVO gap(JobTagRow jobTag, int userLevel, int levelGap) {
         int requiredLevel = jobTag.getRequiredLevel() == null ? 0 : jobTag.getRequiredLevel();
         String suggestion;

@@ -1,0 +1,47 @@
+# 技能方向展示元数据样例（可选）
+# 主数据源仍是 tags.category='skill'；本文件只用于 label/priority/reference 的可选增强。
+displayName: 通用岗位方向
+categories:
+  - key: java
+    label: Java
+    priority: CORE
+    ref: skills/java-backend/SKILL.md
+    shared: true
+  - key: mysql
+    label: MySQL
+    priority: CORE
+    ref: skills/java-backend/references/mysql.md
+    shared: true
+  - key: redis
+    label: Redis
+    priority: CORE
+    ref: skills/java-backend/references/redis.md
+    shared: true
+  - key: spring
+    label: Spring
+    priority: NORMAL
+    ref: skills/java-backend/references/spring.md
+    shared: true
+  - key: ai_agent
+    label: AI Agent
+    priority: CORE
+    ref: skills/ai-agent-dev/SKILL.md
+    shared: true
+  - key: system_design
+    label: 系统设计
+    priority: NORMAL
+    ref: skills/system-design/SKILL.md
+    shared: true
+  - key: algorithm
+    label: 算法与数据结构
+    priority: NORMAL
+    ref: skills/algorithm/SKILL.md
+    shared: true
+  - key: nei_rong_ce_hua
+    label: 内容策划
+    priority: NORMAL
+    ref: prompts/interview/question-skill.md
+    shared: true
+  - key: PROJECT
+    label: 项目经历
+    priority: ALWAYS_ONE

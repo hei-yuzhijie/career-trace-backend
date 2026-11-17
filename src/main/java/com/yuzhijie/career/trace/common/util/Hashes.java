@@ -9,9 +9,13 @@ public final class Hashes {
     }
 
     public static String sha256(String text) {
+        return sha256(text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    public static String sha256(byte[] input) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(text.getBytes(StandardCharsets.UTF_8));
+            byte[] bytes = digest.digest(input);
             StringBuilder builder = new StringBuilder(bytes.length * 2);
             for (byte b : bytes) {
                 builder.append(Character.forDigit((b >> 4) & 0xF, 16));

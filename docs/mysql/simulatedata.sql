@@ -1,6 +1,7 @@
 -- =====================================================
 -- 模拟数据
 -- =====================================================
+USE careertrace;
 
 -- ---------- users ----------
 INSERT INTO users (id, nickname) VALUES
@@ -36,7 +37,16 @@ INSERT INTO tags (id, name, slug, category) VALUES
                                                 (110, '用户增长', 'yong_hu_zeng_zhang', 'skill'),
                                                 (115, '私域运营', 'si_yu_yun_ying',  'skill'),
                                                 (116, '品牌活动', 'pin_pai_huo_dong', 'skill'),
-                                                (117, '短视频脚本', 'duan_shi_pin_jiao_ben', 'skill');
+                                                (117, '短视频脚本', 'duan_shi_pin_jiao_ben', 'skill'),
+                                                -- 技术岗方向
+                                                (201, 'Java', 'java', 'skill'),
+                                                (202, 'MySQL', 'mysql', 'skill'),
+                                                (203, 'Redis', 'redis', 'skill'),
+                                                (204, 'Spring', 'spring', 'skill'),
+                                                (205, 'AI Agent', 'ai_agent', 'skill'),
+                                                (206, '系统设计', 'system_design', 'skill'),
+                                                (207, '算法与数据结构', 'algorithm', 'skill'),
+                                                (208, '前端工程', 'frontend', 'skill');
 -- experience
 INSERT INTO tags (id, name, slug, category) VALUES
     (111, '新媒体运营', 'xin_mei_ti_yun_ying', 'experience');
@@ -95,7 +105,33 @@ INSERT INTO tag_aliases (tag_id, alias, alias_slug) VALUES
                                                         -- 本科
                                                         (112, '本科', 'ben_ke'),
                                                         -- 3-5年
-                                                        (113, '3-5年', '3_5_nian');
+                                                        (113, '3-5年', '3_5_nian'),
+                                                        -- Java
+                                                        (201, 'Java', 'java'),
+                                                        (201, 'Java 后端', 'java_hou_duan'),
+                                                        (201, 'Java开发', 'java_kai_fa'),
+                                                        -- MySQL
+                                                        (202, 'MySQL', 'mysql'),
+                                                        (202, 'Mysql', 'mysql_2'),
+                                                        -- Redis
+                                                        (203, 'Redis', 'redis'),
+                                                        (203, '缓存', 'huan_cun'),
+                                                        -- Spring
+                                                        (204, 'Spring', 'spring'),
+                                                        (204, 'Spring Boot', 'spring_boot'),
+                                                        -- AI Agent
+                                                        (205, 'AI Agent', 'ai_agent'),
+                                                        (205, 'Agent', 'agent'),
+                                                        (205, '智能体', 'zhi_neng_ti'),
+                                                        -- 系统设计
+                                                        (206, '系统设计', 'system_design'),
+                                                        (206, '架构设计', 'jia_gou_she_ji'),
+                                                        -- 算法
+                                                        (207, '算法', 'algorithm'),
+                                                        (207, '数据结构', 'shu_ju_jie_gou'),
+                                                        -- 前端
+                                                        (208, '前端', 'frontend'),
+                                                        (208, '前端工程', 'qian_duan_gong_cheng');
 
 -- ---------- jobs ----------
 INSERT INTO jobs (id, external_id, source, company_id, title, city, salary_min, salary_max, jd_text, status) VALUES
@@ -110,7 +146,9 @@ INSERT INTO jobs (id, external_id, source, company_id, title, city, salary_min, 
                                                                                                                  (5, 'boss_j_2005', 'boss', 1, '品牌内容运营', '杭州', 16, 26,
                                                                                                                   '负责品牌内容矩阵运营；需要短视频脚本与品牌活动经验；本科，3-5 年。', 1),
                                                                                                                  (6, 'boss_j_2006', 'boss', 2, '新媒体运营', '杭州', 10, 16,
-                                                                                                                  '负责公众号周更与用户增长；需要内容排期与数据复盘能力。', 1);
+                                                                                                                  '负责公众号周更与用户增长；需要内容排期与数据复盘能力。', 1),
+                                                                                                                 (7, 'boss_j_2007', 'boss', 1, 'Java 后端开发', '杭州', 18, 30,
+                                                                                                                  '负责后端服务设计与开发；要求 Java、Spring Boot、MySQL、Redis；有 AI Agent/RAG 经验加分；关注性能、稳定性和工程化。', 1);
 
 -- ---------- memory_items ----------
 INSERT INTO memory_items (id, user_id, content, source_type, source_id, status) VALUES
@@ -119,7 +157,8 @@ INSERT INTO memory_items (id, user_id, content, source_type, source_id, status) 
                                                                                     (3, 1, '9 月做了 3 篇小红书笔记，其中 1 篇阅读 4.2 万，带来 300+ 私域咨询', 'resume', NULL, 1),
                                                                                     (4, 1, '暑期运营实习 3 个月，独立负责公众号周更，粉丝从 1.2k 到 3.6k', 'resume', NULL, 1),
                                                                                     (5, 1, '每周复盘完读率与涨粉曲线，用数据指导选题', 'resume', NULL, 1),
-                                                                                    (6, 2, '希望做后端开发，最好在杭州', 'manual', NULL, 1);
+                                                                                    (6, 2, '希望做后端开发，最好在杭州', 'manual', NULL, 1),
+                                                                                    (7, 2, '熟悉 Java、Spring Boot、MySQL、Redis，做过一个基于 RAG 的 AI Agent 项目', 'manual', NULL, 1);
 
 -- ---------- memory_tags ----------
 -- 用户 1：偏好 / 排除
@@ -136,7 +175,12 @@ INSERT INTO memory_tags (memory_id, tag_id, polarity, proficiency, confidence, e
                                                                                                           (4, 111, 1, 3, 0.88, '暑期运营实习 3 个月', 'llm'),
                                                                                                           (5, 107, 1, 3, 0.90, '每周复盘完读率与涨粉曲线', 'llm'),
 -- 用户 2
-                                                                                                          (6, 101, 1, 0, 0.96, '最好在杭州', 'llm');
+                                                                                                          (6, 101, 1, 0, 0.96, '最好在杭州', 'llm'),
+                                                                                                          (7, 201, 1, 3, 0.88, '熟悉 Java', 'manual'),
+                                                                                                          (7, 204, 1, 3, 0.86, '熟悉 Spring Boot', 'manual'),
+                                                                                                          (7, 202, 1, 3, 0.84, '熟悉 MySQL', 'manual'),
+                                                                                                          (7, 203, 1, 2, 0.82, '熟悉 Redis', 'manual'),
+                                                                                                          (7, 205, 1, 2, 0.80, '做过基于 RAG 的 AI Agent 项目', 'manual');
 
 -- ---------- job_tags ----------
 -- J1 字节内容运营（杭州）
@@ -181,6 +225,16 @@ INSERT INTO job_tags (job_id, tag_id, weight, required_level) VALUES
                                                                   (6, 110, 1.00, 2),
                                                                   (6, 107, 0.50, 2),
                                                                   (6, 111, 1.00, 0);
+-- J7 字节 Java 后端
+INSERT INTO job_tags (job_id, tag_id, weight, required_level) VALUES
+                                                                  (7, 101, 1.00, 0),   -- 杭州
+                                                                  (7, 201, 1.00, 3),   -- Java
+                                                                  (7, 204, 1.00, 3),   -- Spring
+                                                                  (7, 202, 1.00, 2),   -- MySQL
+                                                                  (7, 203, 1.00, 2),   -- Redis
+                                                                  (7, 205, 0.50, 2),   -- AI Agent（加分）
+                                                                  (7, 206, 0.50, 2),   -- 系统设计（加分）
+                                                                  (7, 207, 0.50, 2);   -- 算法（加分）
 
 -- ---------- user_skill_profile（仅 skill 类） ----------
 INSERT INTO user_skill_profile (user_id, tag_id, level, confidence, memory_count, best_memory_id) VALUES
@@ -188,4 +242,72 @@ INSERT INTO user_skill_profile (user_id, tag_id, level, confidence, memory_count
                                                                                                       (1, 107, 3, 0.90, 1, 5),
                                                                                                       (1, 109, 2, 0.86, 1, 4),
                                                                                                       (1, 110, 2, 0.84, 1, 4),
-                                                                                                      (1, 115, 2, 0.85, 1, 3);
+                                                                                                      (1, 115, 2, 0.85, 1, 3),
+                                                                                                      (2, 201, 3, 0.88, 1, 7),
+                                                                                                      (2, 204, 3, 0.86, 1, 7),
+                                                                                                      (2, 202, 3, 0.84, 1, 7),
+                                                                                                      (2, 203, 2, 0.82, 1, 7),
+                                                                                                      (2, 205, 2, 0.80, 1, 7);
+
+-- ---------- resumes（简历诊断示例） ----------
+INSERT INTO resumes (id, user_id, job_id, file_hash, original_filename, content_type, file_key, text_content,
+                     status, overall_score, analysis_json, retry_count, prompt_version) VALUES
+    (1, 1, 3, 'demo_resume_hash_001', '陈默-内容运营-简历.pdf', 'application/pdf',
+     '1/20261114/demo-resume.pdf',
+     '陈默，内容运营。2025 年 9 月做了 3 篇小红书笔记，其中 1 篇阅读 4.2 万，带来 300+ 私域咨询。暑期运营实习 3 个月，独立负责公众号周更，粉丝从 1.2k 到 3.6k。每周复盘完读率与涨粉曲线，用数据指导选题。',
+     2, 82,
+     '{"scoreDetail":{"experienceDepth":27,"achievement":15,"skillMatch":17,"content":12,"expression":11},"summary":"内容运营经历有成果，但项目背景与复盘过程偏少。","strengths":["有可量化内容成果","地点与目标岗位一致"],"suggestions":[{"category":"项目","priority":"高","issue":"项目成果只有阅读量，没有业务影响","recommendation":"如果有私域咨询/转化数据，补充真实数据；没有则描述影响范围，不要编造。","evidence":"1 篇阅读 4.2 万"},{"category":"技能","priority":"中","issue":"数据分析缺少过程","recommendation":"补充复盘指标与调整动作，形成可复用的方法。","evidence":"每周复盘完读率与涨粉曲线"}],"memories":[{"content":"独立负责公众号周更，粉丝从 1.2k 增长到 3.6k","tags":[{"name":"内容策划","category":"skill","proficiency":3,"confidence":0.92,"evidence":"独立负责公众号周更"}]},{"content":"9 月做了 3 篇小红书笔记，1 篇阅读 4.2 万，带来 300+ 私域咨询","tags":[{"name":"内容策划","category":"skill","proficiency":3,"confidence":0.90,"evidence":"1 篇阅读 4.2 万"},{"name":"私域运营","category":"skill","proficiency":2,"confidence":0.85,"evidence":"带来 300+ 私域咨询"}]}]}',
+     0, 'v0.1');
+
+INSERT INTO resume_advices (id, resume_id, category, priority, issue, recommendation, evidence) VALUES
+    (1, 1, '项目', '高', '项目成果只有阅读量，没有业务影响', '如果有私域咨询/转化数据，补充真实数据；没有则描述影响范围，不要编造。', '1 篇阅读 4.2 万'),
+    (2, 1, '技能', '中', '数据分析缺少过程', '补充复盘指标与调整动作，形成可复用的方法。', '每周复盘完读率与涨粉曲线');
+
+INSERT INTO resume_memory_candidates (id, resume_id, user_id, content, tags_json, status) VALUES
+    (1, 1, 1, '独立负责公众号周更，粉丝从 1.2k 增长到 3.6k',
+     '[{"name":"内容策划","category":"skill","proficiency":3,"confidence":0.92,"evidence":"独立负责公众号周更"}]', 0),
+    (2, 1, 1, '9 月做了 3 篇小红书笔记，1 篇阅读 4.2 万，带来 300+ 私域咨询',
+     '[{"name":"内容策划","category":"skill","proficiency":3,"confidence":0.90,"evidence":"1 篇阅读 4.2 万"},{"name":"私域运营","category":"skill","proficiency":2,"confidence":0.85,"evidence":"带来 300+ 私域咨询"}]', 0);
+
+-- ---------- interview_sessions（模拟面试示例） ----------
+INSERT INTO interview_sessions (id, user_id, resume_id, job_id, jd_text, direction_tag_ids, difficulty,
+                                question_count, follow_up_count, status, total_score, summary, strengths,
+                                improvements, prompt_version) VALUES
+    (1, 1, 1, 3, '负责小红书/公众号内容策划与更新；接受大小周；有带教。', '[106,107]', 'intermediate',
+     2, 1, 3, 76, '内容策划基础扎实，但数据复盘深度不足。',
+     '["选题拆解有条理","能结合用户画像"]',
+     '["补充 A/B 测试案例","用数据说明调整效果"]',
+     'v0.1'),
+    (2, 1, 1, 3, '负责小红书/公众号内容策划与更新；接受大小周；有带教。', '[106,109]', 'basic',
+     2, 0, 1, NULL, NULL, NULL, NULL, 'v0.1');
+
+INSERT INTO interview_questions (id, session_id, question_index, parent_index, source, tag_id, direction_name,
+                                 topic_summary, title, reference_answer, points) VALUES
+    (1, 1, 0, 0, 'SKILL', 106, '内容策划', '内容选题拆解', '请结合一个项目，说明你如何拆解内容选题？',
+     '按用户画像、历史数据、目标平台建立选题池，再用小流量验证。', '用户画像、选题池、小流量验证'),
+    (2, 1, 1, 0, 'SKILL', 106, '内容策划', '数据不达预期的调整', '如果阅读量不达预期，你会怎么调整？',
+     '先定位是选题、标题、封面还是分发问题，再做单变量实验。', '定位问题、单变量实验、复盘'),
+    (3, 1, 2, 2, 'SKILL', 107, '数据复盘', '复盘指标选择', '你通常用哪些指标复盘内容效果？',
+     '阅读完成率、互动率、涨粉、私域咨询/转化等，结合目标选择。', '指标与目标对齐、转化'),
+    (4, 1, 3, 2, 'SKILL', 107, '数据复盘', '复盘结论落地', '复盘后如何把结论变成下一次行动？',
+     '把结论写成选题/标题/分发规则，下一次实验验证。', '结论结构化、行动闭环'),
+    (5, 2, 0, 0, 'SKILL', 106, '内容策划', '内容选题拆解', '请说明你如何为一个新账号做内容选题？',
+     NULL, NULL),
+    (6, 2, 1, 1, 'SKILL', 109, '内容排期', '内容排期方法', '你如何安排一周的内容排期？',
+     NULL, NULL);
+
+INSERT INTO interview_answers (id, session_id, question_index, answer_text) VALUES
+    (1, 1, 0, '我先按用户画像拆选题，再用历史数据筛掉低效方向，最后用小流量验证。'),
+    (2, 1, 1, '我会先看是选题还是标题问题，再单独改一个变量做对比。'),
+    (3, 1, 2, '主要看阅读完成率、互动率、涨粉和私域咨询，目标是转化时更关注后两项。'),
+    (4, 1, 3, '把复盘结论写成下一次的选题和标题规则，再用一周数据验证。');
+
+INSERT INTO interview_evaluations (id, session_id, question_index, score, feedback, reference_answer, points) VALUES
+    (1, 1, 0, 82, '结构清晰，能结合用户画像，但缺少失败案例。', '按用户画像、历史数据、目标平台建立选题池，再用小流量验证。', '用户画像、选题池、小流量验证'),
+    (2, 1, 1, 78, '有单变量意识，但定位过程可以更具体。', '先定位是选题、标题、封面还是分发问题，再做单变量实验。', '定位问题、单变量实验、复盘'),
+    (3, 1, 2, 70, '指标覆盖较全，但缺少与目标的优先级。', '阅读完成率、互动率、涨粉、私域咨询/转化等，结合目标选择。', '指标与目标对齐、转化'),
+    (4, 1, 3, 75, '有行动闭环，但规则化程度不足。', '把结论写成选题/标题/分发规则，下一次实验验证。', '结论结构化、行动闭环');
+
+INSERT INTO interview_memory_candidates (id, session_id, user_id, tag_id, content, proficiency, confidence, evidence, status) VALUES
+    (1, 1, 1, 106, '模拟面试：能按用户画像拆解内容选题，并说明数据不达预期时的调整思路。', 3, 0.80, '先按用户画像拆选题，再用历史数据筛掉低效方向', 0),
+    (2, 1, 1, 107, '模拟面试：能选择阅读完成率、互动率、涨粉与私域咨询等指标复盘内容效果。', 2, 0.72, '主要看阅读完成率、互动率、涨粉和私域咨询', 0);

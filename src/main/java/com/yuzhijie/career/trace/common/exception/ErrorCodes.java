@@ -33,4 +33,50 @@ public final class ErrorCodes {
     public static final int LLM_CALL_FAILED = 50001;
     /** 知识库检索失败 */
     public static final int KNOWLEDGE_RETRIEVAL_FAILED = 50002;
+
+    /** 简历文件非法 */
+    public static final int RESUME_FILE_INVALID = 40004;
+    /** 面试题量/难度等参数非法 */
+    public static final int INTERVIEW_PARAM_INVALID = 40005;
+    /** 答案题号非法 */
+    public static final int ANSWER_INDEX_INVALID = 40006;
+    /** 方向标签非法 */
+    public static final int DIRECTION_INVALID = 40007;
+    /** 答案超长 */
+    public static final int ANSWER_TOO_LONG = 40008;
+    /** 没有可评估答案 */
+    public static final int NO_ANSWERS = 40009;
+
+    /** 简历不存在 */
+    public static final int RESUME_NOT_FOUND = 40404;
+    /** 面试会话不存在 */
+    public static final int INTERVIEW_NOT_FOUND = 40405;
+    /** 面试记忆候选不存在 */
+    public static final int INTERVIEW_CANDIDATE_NOT_FOUND = 40406;
+    /** 简历记忆候选不存在 */
+    public static final int RESUME_CANDIDATE_NOT_FOUND = 40407;
+
+    /** 简历分析中 */
+    public static final int RESUME_PROCESSING = 40902;
+    /** 面试状态不允许 */
+    public static final int INTERVIEW_STATE_INVALID = 40903;
+    /** 面试正在处理中 */
+    public static final int INTERVIEW_PROCESSING = 40904;
+    /** 简历尚未完成诊断（导出） */
+    public static final int RESUME_REPORT_NOT_READY = 40905;
+    /** 简历尚未完成诊断（导入） */
+    public static final int RESUME_IMPORT_NOT_READY = 40906;
+    /** 面试尚未完成评估 */
+    public static final int INTERVIEW_NOT_READY = 40908;
+    /** 记忆候选已处理 */
+    public static final int CANDIDATE_ALREADY_PROCESSED = 40909;
+
+    /** 简历解析失败 */
+    public static final int RESUME_PARSE_FAILED = 50003;
+    /** 简历诊断失败 */
+    public static final int RESUME_DIAGNOSIS_FAILED = 50004;
+    /** 面试出题失败 */
+    public static final int INTERVIEW_GENERATE_FAILED = 50005;
+    /** 面试评估失败 */
+    public static final int INTERVIEW_EVALUATION_FAILED = 50006;
 }

@@ -99,6 +99,76 @@ public class DeepSeekClient {
         return statusCode == 408 || statusCode == 409 || statusCode == 429 || statusCode >= 500;
     }
 
+    /**
+     * 通用结构化输出调用：返回大模型 message.content（通常是一个 JSON 对象字符串）。
+     */
+    public String completeJson(String prompt, String userMessage) {
+        if (apiKey.isEmpty()) {
+            throw new LlmException("未配置 DEEPSEEK_API_KEY", false);
+        }
+        if (prompt == null || prompt.isBlank()) {
+            throw new LlmException("提示词为空", false);
+        }
+        try {
+            String requestBody = buildRequestBody(prompt, userMessage, 0.2, 4000);
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(stripTrailingSlash(baseUrl) + "/chat/completions"))
+                    .timeout(timeout)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody, StandardCharsets.UTF_8))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request,
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() / 100 != 2) {
+                throw new LlmException("DeepSeek 返回 HTTP " + response.statusCode() + ": "
+                        + abbreviate(response.body(), 300), isRetryableStatus(response.statusCode()));
+            }
+            return extractMessageContent(response.body());
+        } catch (LlmException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new LlmException("DeepSeek 调用被中断", e, false);
+        } catch (Exception e) {
+            throw new LlmException("DeepSeek 调用失败: " + e.getMessage(), e, true);
+        }
+    }
+
+    private String buildRequestBody(String prompt, String userMessage, double temperature, int maxTokens) {
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("model", model);
+        root.put("temperature", temperature);
+        root.put("max_tokens", maxTokens);
+        ObjectNode responseFormat = root.putObject("response_format");
+        responseFormat.put("type", "json_object");
+
+        ArrayNode messages = root.putArray("messages");
+        ObjectNode system = messages.addObject();
+        system.put("role", "system");
+        system.put("content", prompt);
+        ObjectNode user = messages.addObject();
+        user.put("role", "user");
+        user.put("content", userMessage == null ? "" : userMessage);
+
+        return MAPPER.writeValueAsString(root);
+    }
+
+    private String extractMessageContent(String responseBody) {
+        DeepSeekResponse response = MAPPER.readValue(responseBody, DeepSeekResponse.class);
+        if (response.getChoices() == null || response.getChoices().isEmpty()
+                || response.getChoices().get(0).getMessage() == null) {
+            throw new LlmException("DeepSeek 返回内容为空");
+        }
+        String content = response.getChoices().get(0).getMessage().getContent();
+        if (content == null || content.isBlank()) {
+            throw new LlmException("DeepSeek 未返回内容");
+        }
+        return content;
+    }
+
     private String buildRequestBody(String content) {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("model", model);

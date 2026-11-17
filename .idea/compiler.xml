@@ -14,6 +14,7 @@
         <outputRelativeToContentRoot value="true" />
         <processorPath useClasspath="false">
           <entry name="$PROJECT_DIR$/../../../Apps/Maven/repository/org/projectlombok/lombok/1.18.48/lombok-1.18.48.jar" />
+          <entry name="$PROJECT_DIR$/../../../Apps/Maven/repository/org/projectlombok/lombok/1.18.48/lombok-1.18.48.jar" />
         </processorPath>
         <module name="careerTrace-backend" />
       </profile>

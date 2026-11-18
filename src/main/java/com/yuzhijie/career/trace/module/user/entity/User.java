@@ -13,5 +13,7 @@ public class User {
     @TableId(type = IdType.AUTO)
     private Long id;
     private String nickname;
+    /** MD5(password)，仅演示用；生产环境应使用 BCrypt/Argon2。 */
+    private String password;
     private LocalDateTime createdAt;
 }

@@ -15,8 +15,10 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 只有 /api/** 业务接口需要登录；Knife4j、OpenAPI 文档不拦截
-        registry.addInterceptor(authInterceptor).addPathPatterns("/api/**");
+        // 只有 /api/** 业务接口需要登录；登录/刷新/登出不拦截，Knife4j、OpenAPI 文档也不拦截
+        registry.addInterceptor(authInterceptor)
+                .addPathPatterns("/api/**")
+                .excludePathPatterns("/api/v1/auth/**");
     }
 
     @Override

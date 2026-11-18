@@ -4,9 +4,10 @@
 USE careertrace;
 
 -- ---------- users ----------
-INSERT INTO users (id, nickname) VALUES
-                                     (1, '陈默'),
-                                     (2, '林一');
+-- 演示密码统一为 123456，MD5 = e10adc3949ba59abbe56e057f20f883e
+INSERT INTO users (id, nickname, password) VALUES
+                                     (1, '陈默', 'e10adc3949ba59abbe56e057f20f883e'),
+                                     (2, '林一', 'e10adc3949ba59abbe56e057f20f883e');
 
 -- ---------- companies ----------
 INSERT INTO companies (id, external_id, name, industry, size, stage) VALUES

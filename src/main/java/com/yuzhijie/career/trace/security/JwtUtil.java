@@ -16,32 +16,77 @@ import java.time.Instant;
 import java.util.Base64;
 
 /**
- * 轻量 JWT（HS256）实现，避免为当前模块额外引入 JWT 依赖。
+ * 轻量 JWT（HS256）实现，不引入额外 JWT 依赖。
  *
- * <p>Token 载荷：{"sub":"1","uid":1,"iat":...,"exp":...}。</p>
+ * <p>双 Token：access 短有效期，refresh 长有效期；载荷带 type 防止混用。</p>
  */
 @Slf4j
 @Component
 public class JwtUtil {
 
+    public static final String TYPE_ACCESS = "access";
+    public static final String TYPE_REFRESH = "refresh";
+
     private static final String HEADER = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final byte[] secret;
-    private final long expireMinutes;
+    private final long accessExpireMinutes;
+    private final long refreshExpireMinutes;
 
     public JwtUtil(@Value("${career-trace.jwt.secret}") String secret,
-                   @Value("${career-trace.jwt.expire-minutes:10080}") long expireMinutes) {
+                   @Value("${career-trace.jwt.access-expire-minutes:30}") long accessExpireMinutes,
+                   @Value("${career-trace.jwt.refresh-expire-minutes:10080}") long refreshExpireMinutes) {
         this.secret = secret.getBytes(StandardCharsets.UTF_8);
-        this.expireMinutes = expireMinutes;
+        this.accessExpireMinutes = accessExpireMinutes <= 0 ? 30 : accessExpireMinutes;
+        this.refreshExpireMinutes = refreshExpireMinutes <= 0 ? 10080 : refreshExpireMinutes;
     }
 
+    public String generateAccessToken(Long userId) {
+        return generateToken(userId, TYPE_ACCESS, accessExpireMinutes);
+    }
+
+    public String generateRefreshToken(Long userId) {
+        return generateToken(userId, TYPE_REFRESH, refreshExpireMinutes);
+    }
+
+    /**
+     * 兼容旧调用：默认生成 access token。
+     */
     public String generateToken(Long userId) {
+        return generateAccessToken(userId);
+    }
+
+    public TokenInfo parseAccessToken(String token) {
+        return parseToken(token, TYPE_ACCESS);
+    }
+
+    public TokenInfo parseRefreshToken(String token) {
+        return parseToken(token, TYPE_REFRESH);
+    }
+
+    /**
+     * 兼容旧调用：仅解析 access token 并返回 userId。
+     */
+    public Long parseUserId(String token) {
+        return parseAccessToken(token).userId();
+    }
+
+    public long getAccessExpireSeconds() {
+        return accessExpireMinutes * 60;
+    }
+
+    public long getRefreshExpireSeconds() {
+        return refreshExpireMinutes * 60;
+    }
+
+    private String generateToken(Long userId, String type, long expireMinutes) {
         long now = Instant.now().getEpochSecond();
         long exp = now + expireMinutes * 60;
         ObjectNode payload = MAPPER.createObjectNode();
         payload.put("sub", String.valueOf(userId));
         payload.put("uid", userId);
+        payload.put("type", type);
         payload.put("iat", now);
         payload.put("exp", exp);
 
@@ -51,10 +96,7 @@ public class JwtUtil {
         return header + "." + body + "." + signature;
     }
 
-    /**
-     * 校验签名与过期时间，返回用户 ID；失败一律按 401 处理。
-     */
-    public Long parseUserId(String token) {
+    private TokenInfo parseToken(String token, String expectedType) {
         try {
             String[] parts = token.split("\\.");
             if (parts.length != 3) {
@@ -71,11 +113,15 @@ public class JwtUtil {
             if (exp > 0 && exp < Instant.now().getEpochSecond()) {
                 throw BizException.unauthorized("Token 已过期");
             }
+            String type = payload.path("type").asString("");
+            if (!expectedType.equals(type)) {
+                throw BizException.unauthorized("Token 类型错误");
+            }
             long userId = payload.path("uid").asLong(0);
             if (userId <= 0) {
                 throw BizException.unauthorized("Token 缺少用户信息");
             }
-            return userId;
+            return new TokenInfo(userId, type, exp);
         } catch (BizException e) {
             throw e;
         } catch (Exception e) {
@@ -96,5 +142,8 @@ public class JwtUtil {
 
     private static String base64Url(byte[] bytes) {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    public record TokenInfo(Long userId, String type, long expiresAt) {
     }
 }

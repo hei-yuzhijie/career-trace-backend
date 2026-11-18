@@ -17,9 +17,10 @@ USE careertrace;
 CREATE TABLE users (
                        id         BIGINT       NOT NULL AUTO_INCREMENT,
                        nickname   VARCHAR(50)  NOT NULL DEFAULT '',
+                       password   VARCHAR(64)  NOT NULL DEFAULT '' COMMENT 'MD5(password)，仅演示用',
                        created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
                        PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户占位表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
 
 -- -----------------------------------------------------
 -- 2. companies

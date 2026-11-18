@@ -10,9 +10,11 @@ import java.util.List;
  */
 @Data
 public class ResumeDiagnosisPayload {
-
+    //五维打分
     private ScoreDetail scoreDetail;
+    //一句话总评
     private String summary;
+    //简历的优势点，暂时没有处理，存的是大模型返回对应的json
     private List<String> strengths;
     private List<Suggestion> suggestions;
     private List<MemoryCandidate> memories;

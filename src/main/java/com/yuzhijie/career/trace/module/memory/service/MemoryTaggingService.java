@@ -75,11 +75,12 @@ public class MemoryTaggingService {
             if (rawTags == null) {
                 return;
             }
+            // 加载标签索引，把大模型输出的标签名归一化到已有的 tagId
             TagNormalizationService.TagIndex index = tagNormalizationService.loadIndex();
             List<MemoryTag> rows = resolveTags(index, memoryId, rawTags);
 
             memoryTagWriter.replaceTags(memoryId, rows);
-            // 接口文档示例里 updatedAt 在打标完成后变化，这里同步记录“最近一次分析时间”
+            // updatedAt 在打标完成后变化，这里同步记录“最近一次分析时间”
             memoryItemMapper.update(null, Wrappers.<MemoryItem>lambdaUpdate()
                     .eq(MemoryItem::getId, memoryId)
                     .set(MemoryItem::getUpdatedAt, LocalDateTime.now()));
@@ -132,6 +133,10 @@ public class MemoryTaggingService {
         return null;
     }
 
+    /**
+     * 清洗并归一化大模型返回的标签，按 tagId 合并成待落库的 MemoryTag 列表。
+     * 同一标签重复出现时：熟练度取高、置信度取高（同时保留该条的 evidence）、极性取排除。
+     */
     private List<MemoryTag> resolveTags(TagNormalizationService.TagIndex index, Long memoryId,
                                         List<LlmTag> rawTags) {
         Map<Long, MemoryTag> merged = new LinkedHashMap<>();
@@ -140,6 +145,7 @@ public class MemoryTaggingService {
             if (tag == null) {
                 continue;
             }
+            // 归一化：命中别名表就用已有 tagId，没命中则按规则新建
             Long tagId = tagNormalizationService.resolveOrCreate(
                     index, tag.getName(), tag.getCategory(), tag.getPolarity());
             if (tagId == null) {
@@ -174,6 +180,11 @@ public class MemoryTaggingService {
         return new ArrayList<>(merged.values());
     }
 
+
+    /**
+     * 单条标签清洗：过滤空名、过滤 gap 类、截断超长字段
+     * 返回 null 表示这条标签不可用，调用方直接跳过。
+     */
     private LlmTag sanitize(LlmTag raw) {
         if (raw == null || raw.getName() == null || raw.getName().isBlank()) {
             return null;
@@ -191,6 +202,7 @@ public class MemoryTaggingService {
         LlmTag tag = new LlmTag();
         tag.setName(name);
         tag.setCategory(category);
+        // 极性：默认正向
         tag.setPolarity(raw.getPolarity() != null && raw.getPolarity() == -1 ? -1 : 1);
 
         int proficiency = raw.getProficiency() == null ? 0 : clamp(raw.getProficiency(), 0, 4);

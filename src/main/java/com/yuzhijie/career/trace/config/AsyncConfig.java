@@ -22,6 +22,7 @@ public class AsyncConfig {
     @Bean("taskExecutor")
     public ThreadPoolTaskExecutor taskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        // 核心线程数最多2个，避免对deepseek的调用相互阻塞
         executor.setCorePoolSize(2);
         executor.setMaxPoolSize(4);
         executor.setQueueCapacity(100);

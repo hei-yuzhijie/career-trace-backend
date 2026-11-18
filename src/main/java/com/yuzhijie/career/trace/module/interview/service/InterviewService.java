@@ -46,6 +46,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * 面试会话门面。负责创建会话、分页查询、详情、保存答案、提交评估，
+ * 出题和评估都是事务提交后异步触发，不在这里等待结果。
+ */
 @Service
 @RequiredArgsConstructor
 public class InterviewService {
@@ -79,9 +83,14 @@ public class InterviewService {
     private final InterviewScoringService scoringService;
     private final InterviewMemoryService memoryService;
 
+    /**
+     * 创建面试会话。校验参数和关联资源，解析方向，写会话（status=0），
+     * 事务提交后异步出题，立即返回 sessionId。
+     */
     @Transactional
     public InterviewStartVO start(Long userId, InterviewStartRequest request) {
         validateRequest(request);
+        // 岗位或简历先确认存在
         if (request.getJobId() != null && jobMapper.selectJobRowById(request.getJobId()) == null) {
             throw BizException.notFound(ErrorCodes.JOB_NOT_FOUND, "该岗位已下线");
         }
@@ -89,6 +98,7 @@ public class InterviewService {
             throw BizException.notFound(ErrorCodes.RESUME_NOT_FOUND, "简历不存在或已删除");
         }
 
+        // 方向解析有三级兜底：请求指定 → 岗位 skill 标签 → 用户熟练度最高的技能
         List<Long> directionIds = resolveDirections(userId, request);
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
@@ -105,14 +115,19 @@ public class InterviewService {
         session.setUpdatedAt(LocalDateTime.now());
         sessionMapper.insert(session);
 
+        // 事务提交后再触发异步出题，避免异步线程读不到未提交的会话
         AfterCommit.run(() -> generationService.generateAsync(session.getId()));
         return new InterviewStartVO(session.getId(), 0, statusText(0));
     }
 
+    /**
+     * 分页查询当前用户的面试会话记录。可按状态和方向标签过滤。
+     */
     public PageResult<InterviewSessionListItemVO> page(Long userId, Integer page, Integer size,
                                                        Integer status, Long tagId) {
         int pageNo = Pages.page(page);
         int pageSize = Pages.size(size);
+        // tagId 过滤是对 directionTagIds 字符串做 LIKE，只能保证包含，不能保证精确匹配
         LambdaQueryWrapper<InterviewSession> query = Wrappers.<InterviewSession>lambdaQuery()
                 .eq(InterviewSession::getUserId, userId)
                 .eq(status != null, InterviewSession::getStatus, status)
@@ -121,6 +136,7 @@ public class InterviewService {
                 .orderByDesc(InterviewSession::getId);
         Page<InterviewSession> result = new Page<>(pageNo, pageSize);
         sessionMapper.selectPage(result, query);
+        // 列表项带上方向名，前端不用再单独查一次
         List<InterviewSessionListItemVO> records = result.getRecords().stream()
                 .map(session -> new InterviewSessionListItemVO(
                         session.getId(), session.getDifficulty(), session.getQuestionCount(),
@@ -130,8 +146,13 @@ public class InterviewService {
         return new PageResult<>(result.getTotal(), pageNo, pageSize, records);
     }
 
+    /**
+     * 会话详情。出题中（0）和失败（4）不返回题目；评估完成（3）时带上完整报告。
+     * 这个接口也是前端轮询出题和评估状态的入口。
+     */
     public InterviewSessionDetailVO detail(Long userId, Long sessionId) {
         InterviewSession session = requireSession(userId, sessionId);
+        // 出题中或失败时没有可展示的题目
         List<InterviewQuestion> questions = session.getStatus() != null
                 && session.getStatus() != 0 && session.getStatus() != 4
                 ? questionMapper.selectBySessionId(sessionId) : List.of();
@@ -148,6 +169,7 @@ public class InterviewService {
         detail.setDirections(directionVOs(parseIds(session.getDirectionTagIds())));
         detail.setQuestions(questions.stream().map(this::toQuestionVO).toList());
         detail.setAnsweredCount((int) answered);
+        // 待确认的记忆候选数，前端用来显示「有 N 条记忆待确认」的提示
         detail.setMemoryCandidateCount(Math.toIntExact(memoryCandidateMapper.selectCount(
                 Wrappers.<InterviewMemoryCandidate>lambdaQuery()
                         .eq(InterviewMemoryCandidate::getSessionId, sessionId)
@@ -155,6 +177,7 @@ public class InterviewService {
         if (session.getStatus() != null && session.getStatus() == 4) {
             detail.setErrorMessage("出题或评估失败，请重新发起");
         }
+        // 评估完成时才组装报告，报告由 InterviewScoringService 算
         if (session.getStatus() != null && session.getStatus() == 3) {
             List<InterviewEvaluation> evaluations = evaluationMapper.selectBySessionId(sessionId);
             InterviewReportVO report = scoringService.report(session, questions, evaluations);
@@ -163,6 +186,9 @@ public class InterviewService {
         return detail;
     }
 
+    /**
+     * 保存单题答案。只有 status=1 时可作答，用 upsert 支持重复作答同一题。
+     */
     @Transactional
     public InterviewAnswerVO saveAnswer(Long userId, Long sessionId, Integer questionIndex, String answerText) {
         InterviewSession session = requireSession(userId, sessionId);
@@ -172,6 +198,7 @@ public class InterviewService {
         if (answerText != null && answerText.length() > MAX_ANSWER_LENGTH) {
             throw BizException.badRequest(ErrorCodes.ANSWER_TOO_LONG, "单题答案不能超过 5000 字");
         }
+        // 确认这道题属于本会话，防止传入别的会话的 questionIndex
         InterviewQuestion question = questionMapper.selectOne(Wrappers.<InterviewQuestion>lambdaQuery()
                 .eq(InterviewQuestion::getSessionId, sessionId)
                 .eq(InterviewQuestion::getQuestionIndex, questionIndex));
@@ -179,6 +206,7 @@ public class InterviewService {
             throw BizException.badRequest(ErrorCodes.ANSWER_INDEX_INVALID, "答案与题目不匹配");
         }
         answerMapper.upsert(sessionId, questionIndex, answerText == null ? "" : answerText);
+        // 回查一次拿到 answeredAt，upsert 本身不返回这列
         InterviewAnswer answer = answerMapper.selectOne(Wrappers.<InterviewAnswer>lambdaQuery()
                 .eq(InterviewAnswer::getSessionId, sessionId)
                 .eq(InterviewAnswer::getQuestionIndex, questionIndex));
@@ -186,6 +214,9 @@ public class InterviewService {
                 answer == null ? null : answer.getAnsweredAt());
     }
 
+    /**
+     * 查询会话的全部答案。
+     */
     public List<InterviewAnswerVO> answers(Long userId, Long sessionId) {
         requireSession(userId, sessionId);
         return answerMapper.selectBySessionId(sessionId).stream()
@@ -194,12 +225,17 @@ public class InterviewService {
                 .toList();
     }
 
+    /**
+     * 提交评估。只有 status=1 且至少有一道非空答案时可提交，
+     * 状态先改为 2（评估中），事务提交后异步评估。
+     */
     @Transactional
     public InterviewStartVO evaluate(Long userId, Long sessionId) {
         InterviewSession session = requireSession(userId, sessionId);
         if (session.getStatus() == null || session.getStatus() != 1) {
             throw BizException.conflict(ErrorCodes.INTERVIEW_STATE_INVALID, "当前状态不能评估");
         }
+        // 只统计非空答案，空字符串算未作答
         long answers = answerMapper.selectCount(Wrappers.<InterviewAnswer>lambdaQuery()
                 .eq(InterviewAnswer::getSessionId, sessionId)
                 .ne(InterviewAnswer::getAnswerText, ""));
@@ -214,6 +250,9 @@ public class InterviewService {
         return new InterviewStartVO(sessionId, 2, statusText(2));
     }
 
+    /**
+     * 校验会话存在且属于当前用户，不满足时抛 404。
+     */
     public InterviewSession requireSession(Long userId, Long sessionId) {
         InterviewSession session = sessionMapper.selectById(sessionId);
         if (session == null || !userId.equals(session.getUserId())) {
@@ -222,6 +261,9 @@ public class InterviewService {
         return session;
     }
 
+    /**
+     * 校验创建会话的参数：题量、追问数、难度、方向数都在配置范围内。
+     */
     private void validateRequest(InterviewStartRequest request) {
         if (request == null) {
             throw BizException.badRequest(ErrorCodes.INTERVIEW_PARAM_INVALID, "请求不能为空");
@@ -246,6 +288,12 @@ public class InterviewService {
         }
     }
 
+    /**
+     * 解析面试方向：
+     * ① 请求显式指定 → 校验全是 skill 标签；
+     * ② 有 jobId → 取岗位的 skill 标签；
+     * ③ 都没有 → 取用户熟练度最高的 5 个 skill。
+     */
     private List<Long> resolveDirections(Long userId, InterviewStartRequest request) {
         List<Long> requested = request.getDirectionTagIds() == null ? List.of()
                 : new ArrayList<>(new LinkedHashSet<>(request.getDirectionTagIds()));
@@ -257,6 +305,7 @@ public class InterviewService {
                     valid.add(tag.getId());
                 }
             }
+            // 只要有一个不是 skill 标签，就整体拒绝，不做部分接受
             if (valid.size() != requested.size()) {
                 throw BizException.badRequest(ErrorCodes.DIRECTION_INVALID, "请选择有效的技能方向");
             }
@@ -273,6 +322,7 @@ public class InterviewService {
                 return fromJob;
             }
         }
+        // 最后兜底：用户熟练度降序取前 5 个
         return userSkillProfileMapper.selectProfileRows(userId).stream()
                 .sorted((a, b) -> Integer.compare(b.getLevel() == null ? 0 : b.getLevel(),
                         a.getLevel() == null ? 0 : a.getLevel()))
@@ -281,6 +331,9 @@ public class InterviewService {
                 .toList();
     }
 
+    /**
+     * 把方向标签 ID 列表转成带名称的 VO，标签不存在时名称显示为「方向」。
+     */
     private List<InterviewDirectionVO> directionVOs(List<Long> ids) {
         if (ids.isEmpty()) {
             return List.of();
@@ -301,6 +354,9 @@ public class InterviewService {
         return directionVOs(ids).stream().map(InterviewDirectionVO::getName).toList();
     }
 
+    /**
+     * 题目实体转 VO，isFollowUp 由 questionIndex 和 parentIndex 是否相等推导。
+     */
     private InterviewQuestionVO toQuestionVO(InterviewQuestion question) {
         InterviewQuestionVO vo = new InterviewQuestionVO();
         vo.setQuestionIndex(question.getQuestionIndex());
@@ -318,6 +374,9 @@ public class InterviewService {
         return ids.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("");
     }
 
+    /**
+     * 解析逗号分隔的 ID 字符串，跳过非法项。
+     */
     private static List<Long> parseIds(String value) {
         if (value == null || value.isBlank()) {
             return List.of();
@@ -335,6 +394,9 @@ public class InterviewService {
         return ids;
     }
 
+    /**
+     * 状态码转文字，给前端直接展示。
+     */
     private static String statusText(Integer status) {
         if (status == null) {
             return "UNKNOWN";

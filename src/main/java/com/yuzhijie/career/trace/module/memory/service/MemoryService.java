@@ -41,7 +41,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 记忆库业务：CRUD + 打标调度 + 手动修正标签。
+ * 记忆库业务。包含记忆的增删改查、打标任务调度、标签的手动修正和删除。
+ * 涉及标签变更的操作都在事务提交后触发 skill 画像异步重算。
  */
 @Slf4j
 @Service
@@ -60,11 +61,16 @@ public class MemoryService {
     private final TaggingStatusStore taggingStatusStore;
     private final SkillProfileService skillProfileService;
 
+    /**
+     * 新增记忆。校验内容、校验来源、做防抖去重，写库后标记打标状态为 PENDING，
+     * 事务提交后再触发异步打标，避免事务未提交时异步线程读不到新数据。
+     */
     @Transactional
     public TaggingResultVO create(Long userId, CreateMemoryRequest request) {
         String content = validateContent(request.getContent());
         String sourceType = validateSourceType(request.getSourceType());
 
+        // 同一用户短时间内提交相同内容，视为重复提交
         if (memoryItemMapper.selectRecentDuplicate(userId, content) != null) {
             throw BizException.conflict(ErrorCodes.DUPLICATE_SUBMIT, "内容重复，请稍后再试");
         }
@@ -80,11 +86,15 @@ public class MemoryService {
         item.setUpdatedAt(now);
         memoryItemMapper.insert(item);
 
+        // 先占住打标状态，防止并发重复触发，再在事务提交后调异步任务
         taggingStatusStore.tryStart(item.getId());
         AfterCommit.run(() -> memoryTaggingService.tagAsync(item.getId()));
         return new TaggingResultVO(item.getId(), TaggingStatusStore.PENDING, MemoryTaggingService.ESTIMATED_SECONDS);
     }
 
+    /**
+     * 分页查询记忆列表。taggingStatus 是派生字段，无法下推 SQL，按它过滤时走内存过滤再分页。
+     */
     public PageResult<MemoryListItemVO> page(Long userId, Integer page, Integer size,
                                              String sourceType, String taggingStatus, String keyword) {
         int pageNo = Pages.page(page);
@@ -96,6 +106,7 @@ public class MemoryService {
         String statusFilter = taggingStatus == null || taggingStatus.isBlank()
                 ? null : taggingStatus.trim().toUpperCase(Locale.ROOT);
 
+        // 基础查询条件：当前用户的正常状态记忆，可选来源过滤和内容模糊匹配
         LambdaQueryWrapper<MemoryItem> query = Wrappers.<MemoryItem>lambdaQuery()
                 .eq(MemoryItem::getUserId, userId)
                 .eq(MemoryItem::getStatus, 1)
@@ -107,12 +118,13 @@ public class MemoryService {
         List<MemoryItem> items;
         long total;
         if (statusFilter == null) {
+            // 没有打标状态过滤，直接走 SQL 分页
             Page<MemoryItem> result = new Page<>(pageNo, pageSize);
             memoryItemMapper.selectPage(result, query);
             items = result.getRecords();
             total = result.getTotal();
         } else {
-            // taggingStatus 由“标签是否存在 + 进程内任务状态”推导，无法下推 SQL；
+            // taggingStatus 由「标签是否存在 + 进程内任务状态」推导，无法下推 SQL；
             // 记忆量级较小，内存过滤后再分页。
             List<MemoryItem> all = memoryItemMapper.selectList(query);
             Map<Long, Integer> allCounts = countTags(all);
@@ -124,6 +136,7 @@ public class MemoryService {
             items = subList(filtered, pageNo, pageSize);
         }
 
+        // 对当前页的数据批量查标签数，避免逐条查询
         Map<Long, Integer> counts = countTags(items);
         List<MemoryListItemVO> records = new ArrayList<>(items.size());
         for (MemoryItem item : items) {
@@ -140,6 +153,9 @@ public class MemoryService {
         return new PageResult<>(total, pageNo, pageSize, records);
     }
 
+    /**
+     * 查询记忆详情，带上该记忆的所有标签。
+     */
     public MemoryDetailVO detail(Long userId, Long memoryId) {
         MemoryItem item = requireMemory(userId, memoryId);
         List<MemoryTagRow> rows = memoryTagMapper.selectTagRowsByMemoryId(memoryId);
@@ -154,6 +170,9 @@ public class MemoryService {
                 rows.stream().map(MemoryService::toTagVO).toList());
     }
 
+    /**
+     * 更新记忆原文。只改原文，不自动重打标；返回值里的 changed 告诉前端是否需要提示用户重新分析。
+     */
     @Transactional
     public MemoryUpdateVO updateContent(Long userId, Long memoryId, UpdateMemoryRequest request) {
         MemoryItem item = requireMemory(userId, memoryId);
@@ -171,6 +190,9 @@ public class MemoryService {
         return new MemoryUpdateVO(memoryId, DateTimes.format(updatedAt), changed);
     }
 
+    /**
+     * 软删除记忆。置 status=0，删掉关联标签，清打标状态，事务提交后触发 skill 画像重算。
+     */
     @Transactional
     public MemoryDeleteVO delete(Long userId, Long memoryId) {
         requireMemory(userId, memoryId);
@@ -185,6 +207,9 @@ public class MemoryService {
         return new MemoryDeleteVO(memoryId, true, ASYNC);
     }
 
+    /**
+     * 重新打标。用 tryStart 抢占状态，已经在分析中则返回冲突。
+     */
     public TaggingResultVO retag(Long userId, Long memoryId) {
         requireMemory(userId, memoryId);
         if (!taggingStatusStore.tryStart(memoryId)) {
@@ -194,6 +219,9 @@ public class MemoryService {
         return new TaggingResultVO(memoryId, TaggingStatusStore.PENDING, MemoryTaggingService.ESTIMATED_SECONDS);
     }
 
+    /**
+     * 查询记忆的标签，可选按 category 过滤。
+     */
     public List<MemoryTagVO> tags(Long userId, Long memoryId, String category) {
         requireMemory(userId, memoryId);
         List<MemoryTagRow> rows = memoryTagMapper.selectTagRowsByMemoryId(memoryId);
@@ -204,6 +232,10 @@ public class MemoryService {
                 .toList();
     }
 
+    /**
+     * 手动修正标签。校验熟练度和极性的取值范围，落库时覆盖原行并把 assessedBy 置为 manual，
+     * 事务提交后触发 skill 画像重算。
+     */
     @Transactional
     public UpdateMemoryTagVO updateTag(Long userId, Long memoryId, Long tagId,
                                        UpdateMemoryTagRequest request) {
@@ -212,6 +244,7 @@ public class MemoryService {
         if (row == null) {
             throw BizException.notFound(ErrorCodes.MEMORY_TAG_NOT_FOUND, "该标签不属于此记忆");
         }
+        // 至少提供一个字段，否则这次修正没有意义
         if (request.getProficiency() == null && request.getPolarity() == null) {
             throw BizException.badRequest("proficiency 与 polarity 至少提供一个");
         }
@@ -226,11 +259,15 @@ public class MemoryService {
         memoryTagMapper.updateManual(memoryId, tagId, request.getProficiency(), request.getPolarity());
         AfterCommit.run(() -> skillProfileService.recomputeAsync(userId));
 
+        // 返回修正后的实际熟练度，没传就用原值
         int effectiveProficiency = request.getProficiency() != null
                 ? request.getProficiency() : row.getProficiency();
         return new UpdateMemoryTagVO(memoryId, tagId, effectiveProficiency, "manual", ASYNC);
     }
 
+    /**
+     * 删除记忆上的某个标签。按影响行数判断是否存在，删完触发 skill 画像重算。
+     */
     @Transactional
     public DeleteMemoryTagVO deleteTag(Long userId, Long memoryId, Long tagId) {
         requireMemory(userId, memoryId);
@@ -242,6 +279,9 @@ public class MemoryService {
         return new DeleteMemoryTagVO(true, ASYNC);
     }
 
+    /**
+     * 校验记忆存在且属于当前用户且未删除，不满足时抛 404。
+     */
     private MemoryItem requireMemory(Long userId, Long memoryId) {
         MemoryItem item = memoryItemMapper.selectOne(Wrappers.<MemoryItem>lambdaQuery()
                 .eq(MemoryItem::getId, memoryId)
@@ -253,6 +293,9 @@ public class MemoryService {
         return item;
     }
 
+    /**
+     * 批量统计每条记忆的标签数，返回 memoryId 到 tagCount 的映射。
+     */
     private Map<Long, Integer> countTags(List<MemoryItem> items) {
         if (items.isEmpty()) {
             return Map.of();
@@ -265,6 +308,9 @@ public class MemoryService {
         return counts;
     }
 
+    /**
+     * 内存分页。page 从 1 开始，越界返回空列表。
+     */
     private static <T> List<T> subList(List<T> all, int page, int size) {
         int from = (page - 1) * size;
         if (from >= all.size()) {
@@ -286,6 +332,9 @@ public class MemoryService {
                 row.getAssessedBy());
     }
 
+    /**
+     * 校验记忆内容：非空、去首尾空格、按 Unicode 码点计长度（避免 emoji 被算成多个字符）。
+     */
     private static String validateContent(String raw) {
         if (raw == null || raw.trim().isEmpty()) {
             throw BizException.badRequest("记忆内容不能为空");
@@ -297,6 +346,9 @@ public class MemoryService {
         return content;
     }
 
+    /**
+     * 校验来源类型，统一转小写后与白名单比对。
+     */
     private static String validateSourceType(String raw) {
         if (raw == null || raw.isBlank()) {
             throw BizException.badRequest("sourceType 不能为空");

@@ -38,7 +38,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 面试批量评估：问答组分组、分批 LLM、代码算总分/维度分、记忆候选。
+ * 面试批量评估。流程：按主问题分组、分批调大模型评估、代码算总分和维度分、生成总结、生成记忆候选。
+ * 单个批次评估失败时该批按 0 分兜底，不中断整体流程；总结生成失败时用规则拼出的兜底内容。
  */
 @Slf4j
 @Service
@@ -69,9 +70,14 @@ public class InterviewEvaluationService {
     @Value("${career-trace.interview.max-retry:3}")
     private int maxAttempts;
 
+    /**
+     * 异步评估入口。会话状态必须是 2（答题完成），评估完成后状态改为 3（已完成），
+     * 任何异常都把状态改为 4（失败）。
+     */
     @Async("taskExecutor")
     public void evaluateAsync(Long sessionId) {
         InterviewSession session = sessionMapper.selectById(sessionId);
+        // 只有答题完成的会话才需要评估，其他状态直接跳过
         if (session == null || session.getStatus() == null || session.getStatus() != 2) {
             return;
         }
@@ -81,11 +87,13 @@ public class InterviewEvaluationService {
             if (questions.isEmpty()) {
                 throw new IllegalStateException("没有可评估的题目");
             }
+            // 把答案按 questionIndex 建索引，拼 prompt 时直接取
             Map<Integer, String> answerMap = new HashMap<>();
             for (InterviewAnswer answer : answers) {
                 answerMap.put(answer.getQuestionIndex(), answer.getAnswerText());
             }
 
+            // 先按主问题分组，每组包含主问题和它的追问，再按 batchSize 组分批评估
             List<List<InterviewQuestion>> groups = groupQuestions(questions);
             int size = Math.max(1, batchSize);
             for (int start = 0; start < groups.size(); start += size) {
@@ -94,11 +102,13 @@ public class InterviewEvaluationService {
                 evaluateBatch(session, batch, answerMap);
             }
 
+            // 所有批次评估完成后，算总分和维度分
             List<InterviewEvaluation> evaluations = evaluationMapper.selectBySessionId(sessionId);
             int total = scoringService.totalScore(questions, evaluations);
             List<InterviewDimensionVO> dimensions = scoringService.dimensions(questions, evaluations);
             InterviewSummaryPayload summary = summarize(session, dimensions, evaluations, total);
 
+            // 更新会话为已完成，写入总分和总结
             sessionMapper.update(null, Wrappers.<InterviewSession>lambdaUpdate()
                     .eq(InterviewSession::getId, sessionId)
                     .set(InterviewSession::getStatus, 3)
@@ -124,6 +134,10 @@ public class InterviewEvaluationService {
         }
     }
 
+    /**
+     * 评估一批题目。拼 prompt 调大模型，把返回结果按 questionIndex 建索引，
+     * 大模型没返回或返回异常的题目按 0 分兜底落库。
+     */
     private void evaluateBatch(InterviewSession session, List<InterviewQuestion> batch,
                                Map<Integer, String> answerMap) {
         String qaRecords = buildQaRecords(batch, answerMap);
@@ -144,8 +158,10 @@ public class InterviewEvaluationService {
                 }
             }
         } catch (Exception e) {
+            // 整批失败时 evaluated 为空，下面的兜底逻辑会把这一批题目都按 0 分落库
             log.warn("面试评估批次失败，按 0 分兜底: {}", e.getMessage());
         }
+        // 对批内每道题落库，大模型没返回的按 0 分处理
         for (InterviewQuestion question : batch) {
             InterviewEvaluationPayload.Evaluation evaluation = evaluated.get(question.getQuestionIndex());
             int score = evaluation == null || evaluation.getScore() == null
@@ -158,10 +174,15 @@ public class InterviewEvaluationService {
         }
     }
 
+    /**
+     * 生成面试总结。先按维度分和逐题反馈拼一份规则兜底内容，再调大模型生成正式总结；
+     * 大模型返回为空或调用失败时用兜底内容。
+     */
     private InterviewSummaryPayload summarize(InterviewSession session,
                                               List<InterviewDimensionVO> dimensions,
                                               List<InterviewEvaluation> evaluations,
                                               int total) {
+        // 规则兜底：总分、最高维度、优势取前 3、提升项按分数升序取前 3
         InterviewSummaryPayload fallback = new InterviewSummaryPayload();
         fallback.setSummary("本次模拟面试总分 " + total + "，最高维度："
                 + (dimensions.isEmpty() ? "-" : dimensions.get(0).getName()) + "。");
@@ -190,9 +211,11 @@ public class InterviewEvaluationService {
             String content = callWithRetry(prompt);
             InterviewSummaryPayload payload = MAPPER.readValue(
                     LlmJson.extractObject(content), InterviewSummaryPayload.class);
+            // 大模型返回的总结为空，直接用兜底
             if (payload.getSummary() == null || payload.getSummary().isBlank()) {
                 return fallback;
             }
+            // 优势或提升项缺失时，用兜底内容补上
             if (payload.getStrengths() == null || payload.getStrengths().isEmpty()) {
                 payload.setStrengths(fallback.getStrengths());
             }
@@ -205,10 +228,15 @@ public class InterviewEvaluationService {
         }
     }
 
+    /**
+     * 生成面试记忆候选。先删该会话的旧候选，再对每个维度分 >= 60 的维度生成一条候选，
+     * 候选 status=0，等用户确认后才写入记忆库。
+     */
     private void generateCandidates(InterviewSession session, List<InterviewDimensionVO> dimensions) {
         memoryCandidateMapper.delete(Wrappers.<InterviewMemoryCandidate>lambdaQuery()
                 .eq(InterviewMemoryCandidate::getSessionId, session.getId()));
         for (InterviewDimensionVO dimension : dimensions) {
+            // 没有关联标签或分数低于 60 的维度不生成候选
             if (dimension.getTagId() == null || dimension.getScore() == null
                     || dimension.getScore() < 60) {
                 continue;
@@ -224,6 +252,7 @@ public class InterviewEvaluationService {
             candidate.setContent("模拟面试（" + LocalDate.now() + "）：在「" + tag.getName()
                     + "」方向得分 " + dimension.getScore() + "。");
             candidate.setProficiency(proficiency(dimension.getScore()));
+            // 置信度用分数换算，最低 0.5，最高 1.0
             candidate.setConfidence(BigDecimal.valueOf(dimension.getScore() / 100.0)
                     .max(new BigDecimal("0.5")).min(BigDecimal.ONE)
                     .setScale(2, RoundingMode.HALF_UP));
@@ -234,6 +263,9 @@ public class InterviewEvaluationService {
         }
     }
 
+    /**
+     * 分数换算成熟练度：90 以上 L4，80 以上 L3，70 以上 L2，其余 L1。
+     */
     private static int proficiency(int score) {
         if (score >= 90) {
             return 4;
@@ -247,6 +279,9 @@ public class InterviewEvaluationService {
         return 1;
     }
 
+    /**
+     * 按 parentIndex 把题目分组，主问题和它的追问落在同一组里，评估时一起送给大模型。
+     */
     private static List<List<InterviewQuestion>> groupQuestions(List<InterviewQuestion> questions) {
         Map<Integer, List<InterviewQuestion>> grouped = new LinkedHashMap<>();
         for (InterviewQuestion question : questions) {
@@ -255,6 +290,10 @@ public class InterviewEvaluationService {
         return new ArrayList<>(grouped.values());
     }
 
+    /**
+     * 把一批题目和对应答案拼成文本，给 prompt 的 {qaRecords} 用。
+     * 未作答的题目标注为「未作答」，追问标注 isFollowUp=true。
+     */
     private static String buildQaRecords(List<InterviewQuestion> batch, Map<Integer, String> answerMap) {
         StringBuilder builder = new StringBuilder();
         for (InterviewQuestion question : batch) {
@@ -270,6 +309,9 @@ public class InterviewEvaluationService {
         return builder.toString();
     }
 
+    /**
+     * 调 DeepSeek 出 JSON。可重试错误按 500ms × 尝试次数线性退避，最多 maxAttempts 次。
+     */
     private String callWithRetry(String prompt) {
         LlmException last = null;
         for (int attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
@@ -291,6 +333,9 @@ public class InterviewEvaluationService {
         throw last == null ? new LlmException("面试评估调用失败") : last;
     }
 
+    /**
+     * 把字符串列表序列化成 JSON 存库，序列化失败时返回空数组。
+     */
     private static String writeJson(List<String> values) {
         try {
             return MAPPER.writeValueAsString(values == null ? List.of() : values);

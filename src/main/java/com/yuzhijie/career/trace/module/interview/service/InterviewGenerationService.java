@@ -38,7 +38,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 模拟面试出题：简历题 + 方向题；方向来自 tags.category=skill。
+ * 模拟面试出题。把题目拆成简历题和方向题两部分：简历题从简历文本出，方向题按 skill 标签出。
+ * 任一部分生成失败或数量不足时用兜底题补齐，保证题目数符合会话设置。
  */
 @Slf4j
 @Service
@@ -69,6 +70,10 @@ public class InterviewGenerationService {
     @Value("${career-trace.interview.max-retry:3}")
     private int maxAttempts;
 
+    /**
+     * 异步出题入口。会话状态必须是 0（待出题），出完题写库并标记会话为就绪；
+     * 任何异常都把会话标记为失败。
+     */
     @Async("taskExecutor")
     public void generateAsync(Long sessionId) {
         InterviewSession session = sessionMapper.selectById(sessionId);
@@ -76,6 +81,7 @@ public class InterviewGenerationService {
             return;
         }
         try {
+            // 加载出题需要的上下文：方向标签、用户熟练度、岗位要求、简历文本、JD 段落
             List<Long> directionIds = parseIds(session.getDirectionTagIds());
             List<Tag> directions = loadDirections(directionIds);
             Map<Long, Integer> userLevels = loadUserLevels(session.getUserId());
@@ -83,6 +89,7 @@ public class InterviewGenerationService {
             String resumeText = loadResumeText(session.getResumeId());
             String jobSection = buildJobSection(session);
 
+            // 总题数按 60% 简历题、40% 方向题分配，没有简历时全部出方向题
             int total = session.getQuestionCount() == null ? 5 : session.getQuestionCount();
             int followUp = session.getFollowUpCount() == null ? 0 : session.getFollowUpCount();
             int resumeCount = resumeText == null || resumeText.isBlank()
@@ -97,6 +104,7 @@ public class InterviewGenerationService {
                     skillCount, followUp, jobSection)
                     : List.of();
 
+            // 合并两部分题目，都为空时用兜底题
             List<GeneratedQuestion> merged = new ArrayList<>();
             merged.addAll(resumeQuestions);
             merged.addAll(skillQuestions);
@@ -104,6 +112,7 @@ public class InterviewGenerationService {
                 merged = fallbackQuestions(total, followUp, directions.isEmpty() ? null : directions.get(0));
             }
 
+            // 把题目展开成主问题 + 追问行，落库并标记会话就绪
             List<InterviewQuestion> rows = buildRows(sessionId, merged, followUp);
             questionWriter.saveReady(sessionId, rows);
             log.info("模拟面试出题完成 sessionId={}, rows={}", sessionId, rows.size());
@@ -113,6 +122,10 @@ public class InterviewGenerationService {
         }
     }
 
+    /**
+     * 生成简历题。调大模型出题，数量不足时用兜底题补齐，最后截到 count 条。
+     * 调用失败时返回空列表，由调用方决定是否降级为方向题。
+     */
     private List<GeneratedQuestion> generateResumeQuestions(InterviewSession session, int count, int followUp,
                                                             String resumeText, String jobSection) {
         try {
@@ -128,6 +141,7 @@ public class InterviewGenerationService {
                     LlmJson.extractObject(content), InterviewGenerationPayload.class);
             List<GeneratedQuestion> result = toQuestions(payload, "RESUME", null, "简历题",
                     count, followUp);
+            // 大模型出的题不够，用兜底题补齐
             if (result.size() < count) {
                 result.addAll(fallbackQuestions(count - result.size(), followUp, null, "RESUME", "简历题"));
             }
@@ -138,6 +152,10 @@ public class InterviewGenerationService {
         }
     }
 
+    /**
+     * 生成方向题。先按 gap 选方向、分配题目配额、从记忆里拿证据，再调大模型出题；
+     * 调用失败时直接返回兜底题，不再抛异常。
+     */
     private List<GeneratedQuestion> generateSkillQuestions(InterviewSession session, List<Tag> directions,
                                                            Map<Long, Integer> userLevels,
                                                            Map<Long, Integer> jobRequirements,
@@ -161,6 +179,7 @@ public class InterviewGenerationService {
             InterviewGenerationPayload payload = MAPPER.readValue(
                     LlmJson.extractObject(content), InterviewGenerationPayload.class);
             List<GeneratedQuestion> result = toSkillQuestions(payload, selected, count, followUp);
+            // 数量不足时用兜底题补齐，方向取第一个选中的标签
             if (result.size() < count) {
                 Tag tag = selected.isEmpty() ? null : selected.get(0);
                 result.addAll(fallbackQuestions(count - result.size(), followUp, tag,
@@ -174,8 +193,11 @@ public class InterviewGenerationService {
         }
     }
 
+    /**
+     * 把大模型返回的简历题转成 GeneratedQuestion。跳过空标题，截到 count 条。
+     */
     private List<GeneratedQuestion> toQuestions(InterviewGenerationPayload payload, String source,
-                                                 Long tagId, String direction, int count, int followUp) {
+                                                Long tagId, String direction, int count, int followUp) {
         List<GeneratedQuestion> result = new ArrayList<>();
         if (payload == null || payload.getQuestions() == null) {
             return result;
@@ -199,8 +221,11 @@ public class InterviewGenerationService {
         return result;
     }
 
+    /**
+     * 把大模型返回的方向题转成 GeneratedQuestion。按 type 匹配方向标签，匹配不上归到「通用职业能力」。
+     */
     private List<GeneratedQuestion> toSkillQuestions(InterviewGenerationPayload payload,
-                                                      List<Tag> directions, int count, int followUp) {
+                                                     List<Tag> directions, int count, int followUp) {
         List<GeneratedQuestion> result = new ArrayList<>();
         if (payload == null || payload.getQuestions() == null) {
             return result;
@@ -225,6 +250,9 @@ public class InterviewGenerationService {
         return result;
     }
 
+    /**
+     * 把题目展开成落库行。每道主问题占一行，追问紧跟在后面，parentIndex 指向主问题的 index。
+     */
     private List<InterviewQuestion> buildRows(Long sessionId, List<GeneratedQuestion> questions, int followUp) {
         List<InterviewQuestion> rows = new ArrayList<>();
         int index = 0;
@@ -233,6 +261,7 @@ public class InterviewGenerationService {
             rows.add(row(sessionId, mainIndex, mainIndex, generated));
             List<String> followUps = generated.getFollowUps() == null
                     ? List.of() : generated.getFollowUps();
+            // 只取前 followUp 条追问，每条追问单独占一行，parentIndex 指向主问题
             for (int i = 0; i < Math.min(followUp, followUps.size()); i++) {
                 GeneratedQuestion child = new GeneratedQuestion();
                 child.setSource(generated.getSource());
@@ -247,6 +276,9 @@ public class InterviewGenerationService {
         return rows;
     }
 
+    /**
+     * 把 GeneratedQuestion 转成 InterviewQuestion 实体。
+     */
     private InterviewQuestion row(Long sessionId, int index, int parentIndex, GeneratedQuestion generated) {
         InterviewQuestion question = new InterviewQuestion();
         question.setSessionId(sessionId);
@@ -269,8 +301,11 @@ public class InterviewGenerationService {
                 tag == null ? "通用职业能力" : tag.getName());
     }
 
+    /**
+     * 兜底题目。大模型调用失败或出题数量不足时用这几道通用题补齐。
+     */
     private List<GeneratedQuestion> fallbackQuestions(int count, int followUp, Tag tag,
-                                                       String source, String direction) {
+                                                      String source, String direction) {
         String[] titles = {
                 "请介绍一个你最有代表性的项目，并说明你的个人贡献。",
                 "在这个项目中，你遇到的最大困难是什么？怎么解决的？",
@@ -296,6 +331,9 @@ public class InterviewGenerationService {
         return padFollowUps(followUps == null ? List.of() : followUps, count);
     }
 
+    /**
+     * 把追问列表补到 count 条。不足时用固定追问补齐，保证每题都有追问。
+     */
     private static List<String> padFollowUps(List<String> followUps, int count) {
         List<String> result = new ArrayList<>();
         for (String followUp : followUps) {
@@ -312,6 +350,9 @@ public class InterviewGenerationService {
         return result;
     }
 
+    /**
+     * 按 ID 批量加载方向标签，只保留 category=skill 的。
+     */
     private List<Tag> loadDirections(List<Long> ids) {
         if (ids.isEmpty()) {
             return List.of();
@@ -321,15 +362,37 @@ public class InterviewGenerationService {
                 .toList();
     }
 
+    /**
+     * 按 gap 降序选方向，gap = 岗位要求等级 - 用户熟练度，gap 越大越优先出题。
+     * 选出的方向数不超过题数。
+     */
     private List<Tag> selectDirections(List<Tag> directions, Map<Long, Integer> userLevels,
                                        Map<Long, Integer> jobRequirements, int count) {
         if (directions.isEmpty()) {
             return List.of();
         }
+
+        // 遍历方向，算出每个方向的 gap
+        Map<Long, Integer> gapByTag = new HashMap<>();
+        for (Tag tag : directions) {
+            int required = jobRequirements.getOrDefault(tag.getId(), 3);
+            int level = userLevels.getOrDefault(tag.getId(), 0);
+            gapByTag.put(tag.getId(), Math.max(0, required - level));
+        }
+
+        // 按 gap 降序排，gap 相同按 id 升序
         List<Tag> sorted = new ArrayList<>(directions);
-        sorted.sort(Comparator
-                .comparingInt((Tag tag) -> gap(tag, userLevels, jobRequirements)).reversed()
-                .thenComparing(Tag::getId));
+        sorted.sort(new Comparator<Tag>() {
+            @Override
+            public int compare(Tag left, Tag right) {
+                int compared = Integer.compare(gapByTag.get(right.getId()), gapByTag.get(left.getId()));
+                if (compared != 0) {
+                    return compared;
+                }
+                return Long.compare(left.getId(), right.getId());
+            }
+        });
+
         return sorted.size() <= count ? sorted : sorted.subList(0, count);
     }
 
@@ -339,6 +402,9 @@ public class InterviewGenerationService {
         return Math.max(0, required - level);
     }
 
+    /**
+     * 把 count 道题按轮询方式分配给各方向，方向少题多时每个方向都会分到多道。
+     */
     private static Map<Long, Integer> allocate(List<Tag> directions, int count) {
         Map<Long, Integer> allocation = new LinkedHashMap<>();
         if (directions.isEmpty()) {
@@ -351,6 +417,9 @@ public class InterviewGenerationService {
         return allocation;
     }
 
+    /**
+     * 拼方向配额表，给 prompt 用。格式：方向 | 数量 | slug。
+     */
     private static String buildAllocationTable(List<Tag> directions, Map<Long, Integer> allocation) {
         if (directions.isEmpty()) {
             return "通用职业能力 | 全部题目 | 通用";
@@ -364,6 +433,9 @@ public class InterviewGenerationService {
         return builder.toString();
     }
 
+    /**
+     * 取用户最近 20 条出过的题目主题，拼成字符串，避免重复出同类题。
+     */
     private String historicalSection(Long userId) {
         List<String> topics = questionMapper.selectRecentTopics(userId, 20);
         if (topics == null || topics.isEmpty()) {
@@ -372,6 +444,9 @@ public class InterviewGenerationService {
         return String.join("；", topics);
     }
 
+    /**
+     * 从用户记忆标签里取每个方向最多 2 条证据，拼成给 prompt 的参考。
+     */
     private String buildDirectionEvidence(Long userId, List<Tag> directions) {
         if (directions.isEmpty()) {
             return "无指定方向，请出通用职业能力题。";
@@ -395,6 +470,9 @@ public class InterviewGenerationService {
         return builder.toString();
     }
 
+    /**
+     * 拼 JD 段落。优先用会话里直接填的 JD，没有则按 jobId 查岗位，都没有返回提示语。
+     */
     private String buildJobSection(InterviewSession session) {
         if (session.getJdText() != null && !session.getJdText().isBlank()) {
             return session.getJdText();
@@ -408,6 +486,9 @@ public class InterviewGenerationService {
         return "未指定目标岗位。";
     }
 
+    /**
+     * 取简历文本。没指定简历或简历不存在时返回 null。
+     */
     private String loadResumeText(Long resumeId) {
         if (resumeId == null) {
             return null;
@@ -416,6 +497,9 @@ public class InterviewGenerationService {
         return resume == null ? null : resume.getTextContent();
     }
 
+    /**
+     * 加载用户 skill 熟练度，从聚合表读。
+     */
     private Map<Long, Integer> loadUserLevels(Long userId) {
         Map<Long, Integer> levels = new HashMap<>();
         for (SkillProfileRow row : userSkillProfileMapper.selectProfileRows(userId)) {
@@ -426,6 +510,9 @@ public class InterviewGenerationService {
         return levels;
     }
 
+    /**
+     * 加载岗位对 skill 的要求等级，只收 category=skill 的标签。
+     */
     private Map<Long, Integer> loadJobRequirements(Long jobId) {
         Map<Long, Integer> requirements = new HashMap<>();
         if (jobId == null) {
@@ -439,6 +526,9 @@ public class InterviewGenerationService {
         return requirements;
     }
 
+    /**
+     * 调 DeepSeek 出 JSON。可重试错误按 500ms × 尝试次数线性退避，最多 maxAttempts 次。
+     */
     private String callWithRetry(String prompt) {
         LlmException last = null;
         for (int attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
@@ -460,6 +550,9 @@ public class InterviewGenerationService {
         throw last == null ? new LlmException("面试出题调用失败") : last;
     }
 
+    /**
+     * 按大模型返回的 type 匹配方向标签，先比 slug 再比 name，匹配不上返回第一个方向。
+     */
     private static Tag matchTag(String type, List<Tag> directions) {
         if (type == null) {
             return directions.isEmpty() ? null : directions.get(0);
@@ -472,6 +565,9 @@ public class InterviewGenerationService {
         return directions.isEmpty() ? null : directions.get(0);
     }
 
+    /**
+     * 解析 "[1,2,3]" 格式的 ID 字符串，跳过非法项。
+     */
     private static List<Long> parseIds(String value) {
         if (value == null || value.isBlank()) {
             return List.of();
@@ -489,6 +585,9 @@ public class InterviewGenerationService {
         return ids;
     }
 
+    /**
+     * 难度值转中文描述，给 prompt 用。
+     */
     private static String difficultyText(String difficulty) {
         if (difficulty == null) {
             return "进阶";

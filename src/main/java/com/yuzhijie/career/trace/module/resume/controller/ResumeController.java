@@ -6,6 +6,7 @@ import com.yuzhijie.career.trace.module.resume.dto.ConfirmResumeMemoriesRequest;
 import com.yuzhijie.career.trace.module.resume.service.ResumeMemoryService;
 import com.yuzhijie.career.trace.module.resume.service.ResumeService;
 import com.yuzhijie.career.trace.module.resume.vo.ResumeDetailVO;
+import com.yuzhijie.career.trace.module.resume.vo.ResumeIgnoreResultVO;
 import com.yuzhijie.career.trace.module.resume.vo.ResumeImportResultVO;
 import com.yuzhijie.career.trace.module.resume.vo.ResumeListItemVO;
 import com.yuzhijie.career.trace.module.resume.vo.ResumeMemoryCandidatesVO;
@@ -100,6 +101,15 @@ public class ResumeController {
             @PathVariable Long resumeId,
             @RequestBody ConfirmResumeMemoriesRequest request) {
         return ApiResponse.ok(resumeMemoryService.confirm(UserContext.require(), resumeId,
+                request == null ? null : request.getCandidateIds()));
+    }
+
+    @Operation(summary = "忽略简历记忆候选", description = "将待确认候选状态置为 2（已忽略）")
+    @PostMapping("/{resumeId}/ignore-memories")
+    public ApiResponse<ResumeIgnoreResultVO> ignoreMemories(
+            @PathVariable Long resumeId,
+            @RequestBody ConfirmResumeMemoriesRequest request) {
+        return ApiResponse.ok(resumeMemoryService.ignore(UserContext.require(), resumeId,
                 request == null ? null : request.getCandidateIds()));
     }
 }

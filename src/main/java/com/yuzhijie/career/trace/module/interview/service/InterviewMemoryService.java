@@ -8,6 +8,7 @@ import com.yuzhijie.career.trace.module.interview.entity.InterviewMemoryCandidat
 import com.yuzhijie.career.trace.module.interview.entity.InterviewSession;
 import com.yuzhijie.career.trace.module.interview.mapper.InterviewMemoryCandidateMapper;
 import com.yuzhijie.career.trace.module.interview.mapper.InterviewSessionMapper;
+import com.yuzhijie.career.trace.module.interview.vo.InterviewIgnoreResultVO;
 import com.yuzhijie.career.trace.module.interview.vo.InterviewImportResultVO;
 import com.yuzhijie.career.trace.module.interview.vo.InterviewMemoryCandidateVO;
 import com.yuzhijie.career.trace.module.interview.vo.InterviewMemoryCandidatesVO;
@@ -81,6 +82,30 @@ public class InterviewMemoryService {
             AfterCommit.run(() -> skillProfileService.recomputeAsync(userId));
         }
         return new InterviewImportResultVO(sessionId, memoryIds.size(), skipped, memoryIds);
+    }
+
+    @Transactional
+    public InterviewIgnoreResultVO ignore(Long userId, Long sessionId, List<Long> candidateIds) {
+        requireFinished(userId, sessionId);
+        int ignored = 0;
+        int skipped = 0;
+        if (candidateIds != null) {
+            for (Long candidateId : candidateIds) {
+                InterviewMemoryCandidate candidate = candidateMapper.selectById(candidateId);
+                if (candidate == null || !sessionId.equals(candidate.getSessionId())
+                        || !userId.equals(candidate.getUserId())) {
+                    throw BizException.notFound(ErrorCodes.INTERVIEW_CANDIDATE_NOT_FOUND, "记忆候选不存在");
+                }
+                if (candidate.getStatus() == null || candidate.getStatus() != 0) {
+                    skipped++;
+                    continue;
+                }
+                candidate.setStatus(2);
+                candidateMapper.updateById(candidate);
+                ignored++;
+            }
+        }
+        return new InterviewIgnoreResultVO(sessionId, ignored, skipped);
     }
 
     private InterviewSession requireFinished(Long userId, Long sessionId) {

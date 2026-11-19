@@ -251,6 +251,27 @@ public class InterviewService {
     }
 
     /**
+     * 删除模拟面试会话及其关联的题目、作答、评估与记忆候选（不影响已导入的职业记忆）。
+     * 出题中（0）或评估中（2）状态暂不允许删除，避免与异步任务冲突。
+     */
+    @Transactional
+    public void delete(Long userId, Long sessionId) {
+        InterviewSession session = requireSession(userId, sessionId);
+        if (session.getStatus() != null && (session.getStatus() == 0 || session.getStatus() == 2)) {
+            throw BizException.conflict(ErrorCodes.INTERVIEW_PROCESSING, "面试正在处理中，请稍候");
+        }
+        memoryCandidateMapper.delete(Wrappers.<InterviewMemoryCandidate>lambdaQuery()
+                .eq(InterviewMemoryCandidate::getSessionId, sessionId));
+        evaluationMapper.delete(Wrappers.<InterviewEvaluation>lambdaQuery()
+                .eq(InterviewEvaluation::getSessionId, sessionId));
+        answerMapper.delete(Wrappers.<InterviewAnswer>lambdaQuery()
+                .eq(InterviewAnswer::getSessionId, sessionId));
+        questionMapper.delete(Wrappers.<InterviewQuestion>lambdaQuery()
+                .eq(InterviewQuestion::getSessionId, sessionId));
+        sessionMapper.deleteById(sessionId);
+    }
+
+    /**
      * 校验会话存在且属于当前用户，不满足时抛 404。
      */
     public InterviewSession requireSession(Long userId, Long sessionId) {

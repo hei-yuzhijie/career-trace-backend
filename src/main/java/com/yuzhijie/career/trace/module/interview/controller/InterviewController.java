@@ -8,6 +8,7 @@ import com.yuzhijie.career.trace.module.interview.dto.SaveAnswerRequest;
 import com.yuzhijie.career.trace.module.interview.service.InterviewMemoryService;
 import com.yuzhijie.career.trace.module.interview.service.InterviewService;
 import com.yuzhijie.career.trace.module.interview.vo.InterviewAnswerVO;
+import com.yuzhijie.career.trace.module.interview.vo.InterviewIgnoreResultVO;
 import com.yuzhijie.career.trace.module.interview.vo.InterviewImportResultVO;
 import com.yuzhijie.career.trace.module.interview.vo.InterviewMemoryCandidatesVO;
 import com.yuzhijie.career.trace.module.interview.vo.InterviewSessionDetailVO;
@@ -21,6 +22,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -71,6 +73,13 @@ public class InterviewController {
         return ApiResponse.ok(detail);
     }
 
+    @Operation(summary = "删除模拟面试会话", description = "出题中/评估中不可删除；删除后题目、作答、评估报告与记忆候选一并清除")
+    @DeleteMapping("/{sessionId}")
+    public ApiResponse<Void> delete(@PathVariable Long sessionId) {
+        interviewService.delete(UserContext.require(), sessionId);
+        return ApiResponse.ok();
+    }
+
     @Operation(summary = "保存单题答案", description = "可反复保存/修改；仅 READY 状态可写")
     @PutMapping("/{sessionId}/answers/{questionIndex}")
     public ApiResponse<InterviewAnswerVO> saveAnswer(
@@ -108,6 +117,15 @@ public class InterviewController {
             @PathVariable Long sessionId,
             @RequestBody ConfirmInterviewMemoriesRequest request) {
         return ApiResponse.ok(memoryService.confirm(UserContext.require(), sessionId,
+                request == null ? null : request.getCandidateIds()));
+    }
+
+    @Operation(summary = "忽略面试记忆候选", description = "将待确认候选状态置为 2（已忽略），详情页待确认候选数随之更新")
+    @PostMapping("/{sessionId}/ignore-memories")
+    public ApiResponse<InterviewIgnoreResultVO> ignoreMemories(
+            @PathVariable Long sessionId,
+            @RequestBody ConfirmInterviewMemoriesRequest request) {
+        return ApiResponse.ok(memoryService.ignore(UserContext.require(), sessionId,
                 request == null ? null : request.getCandidateIds()));
     }
 }

@@ -12,6 +12,7 @@ import com.yuzhijie.career.trace.module.resume.entity.ResumeMemoryCandidate;
 import com.yuzhijie.career.trace.module.resume.mapper.ResumeMapper;
 import com.yuzhijie.career.trace.module.resume.mapper.ResumeMemoryCandidateMapper;
 import com.yuzhijie.career.trace.module.resume.model.ResumeDiagnosisPayload;
+import com.yuzhijie.career.trace.module.resume.vo.ResumeIgnoreResultVO;
 import com.yuzhijie.career.trace.module.resume.vo.ResumeImportResultVO;
 import com.yuzhijie.career.trace.module.resume.vo.ResumeMemoryCandidateVO;
 import com.yuzhijie.career.trace.module.resume.vo.ResumeMemoryCandidatesVO;
@@ -76,6 +77,30 @@ public class ResumeMemoryService {
             AfterCommit.run(() -> skillProfileService.recomputeAsync(userId));
         }
         return new ResumeImportResultVO(resumeId, memoryIds.size(), skipped, memoryIds);
+    }
+
+    @Transactional
+    public ResumeIgnoreResultVO ignore(Long userId, Long resumeId, List<Long> candidateIds) {
+        requireDone(userId, resumeId);
+        int ignored = 0;
+        int skipped = 0;
+        if (candidateIds != null) {
+            for (Long candidateId : candidateIds) {
+                ResumeMemoryCandidate candidate = candidateMapper.selectById(candidateId);
+                if (candidate == null || !resumeId.equals(candidate.getResumeId())
+                        || !userId.equals(candidate.getUserId())) {
+                    throw BizException.notFound(ErrorCodes.RESUME_CANDIDATE_NOT_FOUND, "记忆候选不存在");
+                }
+                if (candidate.getStatus() == null || candidate.getStatus() != 0) {
+                    skipped++;
+                    continue;
+                }
+                candidate.setStatus(2);
+                candidateMapper.updateById(candidate);
+                ignored++;
+            }
+        }
+        return new ResumeIgnoreResultVO(resumeId, ignored, skipped);
     }
 
     private Resume requireDone(Long userId, Long resumeId) {
